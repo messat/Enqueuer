@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Shared settings (framework, nullable, usings, warnings) come from /Directory.Build.props -->
+  <PropertyGroup>
+    <!-- Test projects are never published as NuGet packages -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Lets dotnet test discover and run the tests in this project -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <!-- The test framework: [Test], [TestFixture], Assert.That -->
+    <PackageReference Include="NUnit" />
+    <!-- Connects NUnit to dotnet test and Visual Studio Test Explorer -->
+    <PackageReference Include="NUnit3TestAdapter" />
+    <!-- Compile-time checks for common NUnit mistakes -->
+    <PackageReference Include="NUnit.Analyzers" />
+    <!-- Measures code coverage during dotnet test and fails the run below the threshold -->
+    <PackageReference Include="coverlet.msbuild" />
+  </ItemGroup>
+
+  <!-- The project under test -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Enqueuer\Enqueuer.csproj" />
+  </ItemGroup>
+
+</Project>

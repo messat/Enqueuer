@@ -1,0 +1,29 @@
+# Code style rules for the whole repo. Visual Studio, Rider and VS Code read
+# this file, and the build enforces the [*.cs] rules marked as warnings
+# (EnforceCodeStyleInBuild in Directory.Build.props, warnings fail the build).
+root = true
+
+# All files
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Project, props, JSON and YAML files use 2-space indentation
+[*.{csproj,props,targets,json,yml,yaml}]
+indent_size = 2
+
+# C# files
+[*.cs]
+# No top-level statements: Program.cs must use class Program with static Main (IDE0211)
+csharp_style_prefer_top_level_statements = false:warning
+dotnet_diagnostic.IDE0211.severity = warning
+
+# Block-scoped namespaces: namespace X { ... } rather than namespace X; (IDE0160)
+csharp_style_namespace_declarations = block_scoped:warning
+dotnet_diagnostic.IDE0160.severity = warning
+
+# System usings listed first, then the rest alphabetically
+dotnet_sort_system_directives_first = true

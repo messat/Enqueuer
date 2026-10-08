@@ -1,0 +1,27 @@
+# Build output (recreated by every dotnet build)
+bin/
+obj/
+
+# IDE and editor state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Test results and coverage reports
+TestResults/
+coverage/
+*.cobertura.xml
+coverage.json
+
+# Local secrets and environment files (never commit these). Any .env.<name> is ignored too;
+# .env.example holds only placeholders and is committed.
+.env
+.env.*
+!.env.example
+appsettings.*.local.json
+
+# OS files
+Thumbs.db
+.DS_Store

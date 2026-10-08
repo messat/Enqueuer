@@ -1,0 +1,51 @@
+<Project>
+
+  <!--
+    Shared build settings. MSBuild imports this file automatically into every
+    project below this folder (src/ and tests/). A project can override a value
+    by setting it again in its own .csproj, so do not repeat these there.
+  -->
+  <PropertyGroup>
+    <!-- Every project targets .NET 10 (LTS) -->
+    <TargetFramework>net10.0</TargetFramework>
+
+    <!-- Compiler warns when a value might be null and is not handled -->
+    <Nullable>enable</Nullable>
+
+    <!-- Every file must declare its own using directives -->
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <!-- Any compiler warning fails the build (Definition of Done: zero warnings) -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Apply the code style rules in .editorconfig during dotnet build, not only in the IDE -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+  <!--
+    Code coverage (coverlet.msbuild), for test projects only: any project whose
+    name ends in .Tests. Each test project measures only the project it is named
+    after, e.g. Enqueuer.Tests measures Enqueuer.
+    Coverage is checked by dotnet test, not dotnet build.
+  -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <!-- Measure coverage on every dotnet test run -->
+    <CollectCoverage>true</CollectCoverage>
+
+    <!-- Only the project under test counts, not the test code or other projects -->
+    <Include>[$(MSBuildProjectName.Replace('.Tests', ''))]*</Include>
+
+    <!-- Fail the test run if line coverage drops below 80% (Definition of Done) -->
+    <Threshold>80</Threshold>
+    <ThresholdType>line</ThresholdType>
+
+    <!-- Auto-properties ({ get; set; }) hold no logic, so they are not counted: without this,
+         every column on an entity would count as an untested line -->
+    <SkipAutoProps>true</SkipAutoProps>
+
+    <!-- Cobertura XML report under TestResults/ (git-ignored), readable by pipelines and report tools -->
+    <CoverletOutputFormat>cobertura</CoverletOutputFormat>
+    <CoverletOutput>$(MSBuildProjectDirectory)/TestResults/coverage/</CoverletOutput>
+  </PropertyGroup>
+
+</Project>
