@@ -18,7 +18,7 @@ It is the first time the enqueuer writes anything, and the second service it tal
 
 What happens in one run:
 
-1. Settings are checked at start-up, as today. There are no new settings.
+1. Settings are checked at start-up, as today. There are no new settings, but `Enqueuer:Queue:ConnectionString` must now be one the storage SDK can read (Settings).
 2. The repositories are listed and chosen, as in Issue 2.
 3. For each repository to scan, in the order Azure DevOps listed them, a scan request is built with a new correlation ID and sent to `scan-nightly`.
 4. One line per message names its repository and correlation ID (decision 15), one line says how many were sent, and the enqueuer exits 0.
@@ -52,7 +52,7 @@ Decisions 12, 15 and 19 were agreed in the design discussion on 2026-10-08. The 
 | 10 | A missing queue | Found on the first send (Azure's `QueueNotFound`) and thrown as `ScanQueueNotFoundException`. `Program` logs `Queue missing, enqueuer stopped: {Problem}` as one line and exits 2 | Fixed like a setting, by creating the queue or correcting its name, as Issue 1's exit code 2 already says. Not checked at start-up, because Message Sender cannot read a queue's properties. The same first words as the scanner's line |
 | 11 | Retries | The storage SDK's own: 5 retries, exponential from 0.8 seconds up to 1 minute apart, 100 seconds per attempt. Nothing added | Microsoft's defaults for storage clients, which raise Azure.Core's 3 retries to 5. They already ride out a brief storage blip. Issue 2's resilience handler is for `HttpClient`, which the storage SDK does not use |
 | 12 | A failed send | Stop at the first request that still fails after its retries, and exit 1. The requests already sent stay on the queue, and the rest are not tried | After 5 retries a send fails because the queue cannot be reached or the identity is refused, so the next request would fail the same way, after its own retries. Every request comes from one tested writer, so no single message is bad on its own. A re-run sends every repository again (decision 14). Sending the rest and then exiting 1 was turned down: it saves the other repositories only when the failure belongs to one message, and when the queue times out it spends about 10 minutes of retries on each one |
-| 13 | What a failed send logs | `Program` logs `Scan requests could not be sent, enqueuer stopped: {Problem}` as one line and exits 1. `{Problem}` names the repository, the queue and Azure's status and error code, never the SDK's own message (When a send fails) | The SDK's message runs to many lines, with every response header. One line, as Issue 2's failures are. The original is kept as the inner exception |
+| 13 | What a failed send logs | `Program` logs `Scan requests could not be sent, enqueuer stopped: {Problem}` as one line and exits 1. `{Problem}` names the repository, the queue and Azure's status and error code, never the SDK's own message. When Azure never answered, it is instead the first line of the network's or Azure.Core's message, such as `Retry failed after 6 tries. ...` (When a send fails) | The SDK's message runs to many lines, with every response header. One line, as Issue 2's failures are. The original is kept as the inner exception |
 | 14 | Duplicates | Not prevented. A re-run after a failure, or the job's own retry in Azure (Issue 6), sends every repository again | Storage queues deliver at least once, so the scanner must cope with duplicates anyway. Its Issue 13 (#76) drops a request already satisfied by a scan that started after it was queued. Until #76 is built a duplicate is scanned again, which is harmless: findings are matched on fingerprint (RepoScanner ADR-024), and a repository being scanned is skipped (RepoScanner ADR-027) |
 | 15 | Logging | One Information line per message, `Queued {ProjectName}/{RepositoryName} with correlation {CorrelationId}`, logged once it is sent, then `Sent {SentCount} scan requests to {QueueName}` in place of `Nothing sent: ...` | The correlation ID is how a sent request is found in the scanner's `ScanRuns` table and log (#111), and after a failed send the `Queued` lines show exactly which requests reached the queue. This brings forward part of Issue 4's notes, which ask for each correlation ID to be logged with its repository: logged as a named property now, Issue 4 only adds the run summary and the Log Analytics query. Leaving every per-message line to Issue 4 was turned down: #111 would have to read the IDs off the queue with `az storage message peek`, and a failed run would not show what was sent |
 | 16 | Message lifetime | Visible at once. Azure's default time-to-live, 7 days | A message that expired unread would be a repository not scanned, with nothing to say so. Older duplicates are #76's to drop, not the queue's |
@@ -126,11 +126,11 @@ The request for `victim-repo` is written as:
 
 GUIDs are written in their usual lower-case form with hyphens. A character JSON needs escaped is escaped by `Utf8JsonWriter`'s default rules, and the scanner reads it back as it was.
 
-`ScanRequestContract`, a test helper, holds the rules each message must keep. They are the scanner's (RepoScanner Issue 7 design, Message format):
+`ScanRequestContract`, a test helper, holds the rules each message must keep. The value rules are the scanner's (RepoScanner Issue 7 design, Message format). The rule on names is the enqueuer's own and stricter, since the scanner ignores case and extra fields (decision 3). *Corrected after #109's review, 2026-10-08.*
 
 | Field | Rule |
 |---|---|
-| The field names | Exactly the example's six, in its case, each once |
+| The field names | Exactly the example's six, in its case and order, each once |
 | `schemaVersion` | The number `1`, the example's |
 | `correlationId` | A GUID, not all zeros |
 | `repositoryId` | A GUID, not all zeros |
@@ -200,9 +200,9 @@ namespace Enqueuer.Queue
 |---|---|---|
 | Azure answered `QueueNotFound` | `ScanQueueNotFoundException` | `The queue scan-nightly does not exist. Create it, or correct Enqueuer:Queue:Name.` |
 | Any other answer from Azure, after the retries, such as `403` | `ScanQueueUnavailableException` | `The scan request for Kudos Wall/victim-repo could not be sent to scan-nightly: Azure answered 403 (AuthorizationPermissionMismatch).` |
-| A network error or a timeout after the retries, which Azure.Core throws as an `AggregateException`, or `DefaultAzureCredential` getting no token | `ScanQueueUnavailableException` | `The scan request for Kudos Wall/victim-repo could not be sent to scan-nightly: ` and the first line of the exception's message |
+| A network error or a timeout after the retries, or `DefaultAzureCredential` getting no token. Azure.Core throws an `AggregateException` when several tries failed, but the failure bare when only the last did, after the others were answered 5xx: a `RequestFailedException` with status 0, an `IOException`, or its own network timeout as an `OperationCanceledException` the run did not ask for | `ScanQueueUnavailableException` | `The scan request for Kudos Wall/victim-repo could not be sent to scan-nightly: ` and the first line of the exception's message, never `Azure answered 0` |
 
-The original is the inner exception in each case. If the token passed to `SendAsync` is cancelled, `OperationCanceledException` goes through unchanged, as Issue 1 handles it today. Whether Azurite stopped gives a `RequestFailedException` or an `AggregateException` is checked in #110's manual checks; either way it is the last row's message.
+The original is the inner exception in each case. If the token passed to `SendAsync` is cancelled, `OperationCanceledException` goes through unchanged, as Issue 1 handles it today, even when the run is stopped part way through the retries and Azure.Core reports it inside an `AggregateException`. Any other exception, such as a bug, goes through unchanged with its stack trace. *The bare failures and the cancellation part way through the retries were added after #110's final review, 2026-10-08.* With Azurite not running, #110's manual check gave an `AggregateException` ("Retry failed after 6 tries"), whose one line repeats the reason once per try.
 
 `Program.RunAsync` gets two new `catch` blocks, beside Issue 2's:
 
@@ -235,7 +235,7 @@ A `Queued` line is logged only once its send has succeeded, so after a failure t
 
 ## Settings
 
-No new settings. Sending uses Issue 1's:
+No new settings. Sending uses Issue 1's. *After #110's final review, 2026-10-08:* `Enqueuer:Queue:ConnectionString` is also checked at start-up as a connection string the storage SDK can read, since #110 is the first code to read it, so a typo is one line and exit 2, not a stack trace. The message never holds the value, which may hold an account key.
 
 | Setting | Required | `Development` | Notes |
 |---|---|---|---|
@@ -264,13 +264,15 @@ RepoScanner's `scripts/enqueue-local.ps1` also creates them, but it adds a messa
 
 These steps are run by hand once #110 is done, and what each printed goes in the pull request (decision 19). They need Azurite, the Azure CLI, SQL Server Express (`.\SQLEXPRESS`) with RepoScanner's database, and both PAT variables set:
 
-1. Empty the queue: `az storage message clear --queue-name scan-nightly --connection-string "UseDevelopmentStorage=true"`.
+1. Look at the queue first, which changes nothing: `az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true"`. Expected: empty. Anything there is not this run's: whoever put it there decides what happens to it, before the run goes on.
 2. Run the enqueuer: `dotnet run --project src/Enqueuer`. Expected: a `Queued` line for each of BlacklightInternalsMo's 5 repositories, `Sent 5 scan requests to scan-nightly`, and `$LASTEXITCODE` 0.
-3. Look at the queue: `az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true"`. Expected: 5 messages, each plain JSON with a correlation ID from step 2.
+3. Look at the queue again, with the same command. Expected: 5 messages, each plain JSON with a correlation ID from step 2.
 4. In RepoScanner, run the scanner: `dotnet run --project src/RepoScanner.Scanner`. Expected: it scans each repository, the queue ends empty, and it exits 0.
-5. For each correlation ID from step 2: `sqlcmd -S .\SQLEXPRESS -E -C -d RepoScanner -Q "SELECT Status FROM ScanRuns WHERE CorrelationId = '<id>'"`. Expected: one row, `Completed` or `PartiallyCompleted`.
+5. Find the five correlation IDs from step 2: `sqlcmd -S .\SQLEXPRESS -E -C -d RepoScanner -h -1 -W -s "|" -Q "SET NOCOUNT ON; SELECT s.CorrelationId, r.Name, r.AzureDevOpsId, s.TriggerType, s.Status FROM ScanRuns s JOIN Repositories r ON r.Id = s.RepositoryId WHERE s.CorrelationId IN ('<id>', ...)"`. Expected: one row each, `Nightly`, `Completed` or `PartiallyCompleted`, under the `repositoryId` step 3 showed.
 6. A missing queue: `dotnet run --project src/Enqueuer -- --Enqueuer:Queue:Name scan-missing-zz9q1`. Expected: one line starting `Queue missing, enqueuer stopped`, and `$LASTEXITCODE` 2.
-7. A failed send: stop Azurite, then run the enqueuer. Expected: after the retries, about 25 seconds, one line starting `Scan requests could not be sent, enqueuer stopped`, and `$LASTEXITCODE` 1.
+7. A failed send: stop Azurite, then run the enqueuer. Expected: after the retries, about 40 seconds, one line starting `Scan requests could not be sent, enqueuer stopped`, and `$LASTEXITCODE` 1.
+
+*After #111, 2026-10-08: steps 1 and 5 were changed to what was run. Step 1 had emptied the queue, which could delete messages that are not this run's, and step 5 now finds all five scan runs with their repository and trigger in one query. #111 ran steps 1 to 5: the queue was empty at step 1, and all five scan runs were `Nightly` and `Completed`. Steps 6 and 7 were run in #110's manual checks. For step 7 the queue was pointed at an unused port, because Azurite was the user's own process; the failure line came 37 seconds after the enqueuer started, not about 25.*
 
 ## README
 
@@ -284,7 +286,7 @@ These steps are run by hand once #110 is done, and what each printed goes in the
 
 Each task is written test first. `dotnet test` still needs no network, no Azurite and no PAT.
 
-`FakeQueueClient` is RepoScanner's, cut to what the enqueuer uses: it keeps every body it is sent, with its visibility timeout and time-to-live, and can be told to fail a chosen send with a given exception. `ProgramTests` that run the whole program put it in place of the real client, so none reaches Azurite.
+`FakeQueueClient` is RepoScanner's, cut to what the enqueuer uses: it keeps every body it is sent, with its visibility timeout and time-to-live, and can be told to fail a chosen send with a given exception. The `ProgramTests` that send put it in place of the real client. The other `ProgramTests` that run the whole program use `FakeAzureDevOps`'s sample listing, which has nothing to scan, so they never touch the queue. Neither kind reaches Azurite.
 
 | Task | Tests |
 |---|---|
@@ -319,5 +321,6 @@ One task at a time, stopping after each for review, then a commit whose message 
 - A missing queue is found only when there is something to send, and only after Azure DevOps has been called. With no repository to scan, the enqueuer exits 0 without touching the queue.
 - After a failed send, the requests already sent stay on the queue and a re-run sends them again. Until RepoScanner #76 is built, those repositories are scanned twice.
 - One send that keeps timing out takes about 10 minutes across its 6 attempts. Issue 6's `replicaTimeout` must allow for it.
+- A misspelt queue name in Azure may be answered `403`, not `404`, because `id-scanner`'s Message Sender role covers `scan-nightly` only, so it would exit 1, not 2. Exit 2 for a missing queue is checked only locally. For Issue 6 to check. *Added after #110's final review, 2026-10-08.*
 - The enqueuer trusts Azure DevOps' repository names. A name the scanner would refuse, possible only if it was made through the API around the naming rules, gets that one message moved to `scan-nightly-poison` by the scanner, with its warning.
 - The two copies of the format are tied together only by the contract tests on each side (ENQ-ADR-001).
