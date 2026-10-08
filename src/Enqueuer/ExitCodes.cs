@@ -6,7 +6,8 @@ namespace Enqueuer
         // Every listed repository was queued, or there was nothing to queue
         public const int Success = 0;
 
-        // Azure DevOps or the queue could not be reached, a send failed, or something else went wrong
+        // Azure DevOps refused the PAT, Azure DevOps or the queue could not be reached, a send failed, or something
+        // else went wrong
         public const int Failure = 1;
 
         // Settings are missing or invalid, so the enqueuer did not start, or the queue is missing

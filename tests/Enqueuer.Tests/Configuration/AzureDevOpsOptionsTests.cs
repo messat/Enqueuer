@@ -16,7 +16,7 @@ namespace Enqueuer.Tests.Configuration
         private const string Pat = "your-test-pat-0001";
 
         private const string BadOrganizationUrl =
-            "Enqueuer:AzureDevOps:OrganizationUrl must be an https URL such as https://dev.azure.com/<organisation>, with no user name in it";
+            "Enqueuer:AzureDevOps:OrganizationUrl must be an https URL such as https://dev.azure.com/<organisation>, with no user name, query string or fragment in it";
 
         // The same validator that ValidateDataAnnotations() registers in Program
         private readonly DataAnnotationValidateOptions<AzureDevOpsOptions> _validator = new DataAnnotationValidateOptions<AzureDevOpsOptions>(null);
@@ -45,6 +45,27 @@ namespace Enqueuer.Tests.Configuration
             }
         }
 
+        // Review finding 5: a space or line break copied with the token would be sent with it, and Azure DevOps'
+        // refusal would then read as an expired PAT. Said at start-up instead, without showing the value.
+        [TestCase(Pat + " ")]
+        [TestCase(" " + Pat)]
+        [TestCase(Pat + "\r\n")]
+        [TestCase("\"" + Pat + "\"")]
+        public void Validate_WithSpacesOrQuotesAroundThePat_SaysSoWithoutShowingIt(string pat)
+        {
+            ValidateOptionsResult result = _validator.Validate(
+                null, new AzureDevOpsOptions { OrganizationUrl = "https://dev.azure.com/BlacklightInternalsMo", Pat = pat });
+            bool leaked = result.FailureMessage?.Contains(Pat, StringComparison.Ordinal) == true;
+
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(result.Failed, Is.True);
+                Assert.That(result.FailureMessage, Does.Contain(
+                    "Enqueuer:AzureDevOps:Pat starts or ends with a space, line break or quote mark. Set it again without them."));
+                Assert.That(leaked, Is.False, "the PAT is in the failure message");
+            }
+        }
+
         // https only, so the PAT is never sent in the clear. The tests fake the HTTP handler, so unlike the
         // scanner there is no file: URL to allow.
         [TestCase("")]
@@ -53,6 +74,10 @@ namespace Enqueuer.Tests.Configuration
         [TestCase("file:///C:/repos")]
         // The address Azure DevOps' Clone dialog offers has the user name in it
         [TestCase("https://BlacklightInternalsMo@dev.azure.com/BlacklightInternalsMo")]
+        // Review finding 4: the client adds the API path after the URL, so a query string or fragment would put the
+        // path in the wrong place
+        [TestCase("https://dev.azure.com/BlacklightInternalsMo?x=1")]
+        [TestCase("https://dev.azure.com/BlacklightInternalsMo#top")]
         public void Validate_WithABadOrganizationUrl_FailsWithoutShowingThePat(string organizationUrl)
         {
             ValidateOptionsResult result = _validator.Validate(null, new AzureDevOpsOptions { OrganizationUrl = organizationUrl, Pat = Pat });

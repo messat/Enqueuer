@@ -71,6 +71,20 @@ namespace Enqueuer
                 Log.Fatal("Invalid configuration, enqueuer not started: {ValidationFailures}", failures);
                 return ExitCodes.InvalidConfiguration;
             }
+            catch (AzureDevOpsAuthenticationException exception)
+            {
+                // Fixed by renewing the PAT, not code: one line, no stack trace. The scanner logs the same first words,
+                // so one alert catches both jobs when the shared PAT expires (Issue 2 design, decision 7).
+                Log.Fatal("Azure DevOps refused the token, enqueuer stopped: {Problem}", exception.Message);
+                return ExitCodes.Failure;
+            }
+            catch (AzureDevOpsUnavailableException exception)
+            {
+                // The network, a timeout, another status or an answer that is not a repository list (decision 8):
+                // one line saying which, no stack trace
+                Log.Fatal("Azure DevOps could not list the repositories, enqueuer stopped: {Problem}", exception.Message);
+                return ExitCodes.Failure;
+            }
             catch (Exception exception)
             {
                 // Anything else is unexpected: log it with the full exception so it can be diagnosed

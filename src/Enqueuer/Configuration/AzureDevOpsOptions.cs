@@ -25,17 +25,35 @@ namespace Enqueuer.Configuration
         public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
             // https only, so the PAT is never sent in the clear. A user name in the URL, as Azure DevOps' Clone
-            // dialog offers it, is the pattern RepoScanner flags.
+            // dialog offers it, is the pattern RepoScanner flags. No query string or fragment, since the client adds
+            // the API path after the URL (review finding 4).
             bool valid = Uri.TryCreate(OrganizationUrl, UriKind.Absolute, out Uri? uri)
                 && uri.Scheme == Uri.UriSchemeHttps
-                && uri.UserInfo.Length == 0;
+                && uri.UserInfo.Length == 0
+                && uri.Query.Length == 0
+                && uri.Fragment.Length == 0;
 
             if (!valid)
             {
                 yield return new ValidationResult(
-                    "Enqueuer:AzureDevOps:OrganizationUrl must be an https URL such as https://dev.azure.com/<organisation>, with no user name in it",
+                    "Enqueuer:AzureDevOps:OrganizationUrl must be an https URL such as https://dev.azure.com/<organisation>, with no user name, query string or fragment in it",
                     new[] { nameof(OrganizationUrl) });
             }
+
+            // A space, line break or quote mark copied with the token would be sent with it, and Azure DevOps' refusal
+            // would then read as an expired PAT (review finding 5). Said here instead, never showing the value.
+            if (HasSpaceOrQuoteAtAnEnd(Pat))
+            {
+                yield return new ValidationResult(
+                    "Enqueuer:AzureDevOps:Pat starts or ends with a space, line break or quote mark. Set it again without them.",
+                    new[] { nameof(Pat) });
+            }
+        }
+
+        private static bool HasSpaceOrQuoteAtAnEnd(string value)
+        {
+            return value.Length > 0
+                && (char.IsWhiteSpace(value[0]) || char.IsWhiteSpace(value[^1]) || value[0] == '"' || value[^1] == '"');
         }
 
         // A record's ToString prints every property, so a settings object in a log line would print the PAT

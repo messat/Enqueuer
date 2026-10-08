@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -71,10 +72,14 @@ namespace Enqueuer.Tests.AzureDevOps
             }
             """;
 
+        private const string JsonContentType = "application/json; charset=utf-8";
+
         private readonly object _lock = new object();
-        private readonly Queue<(HttpStatusCode Status, string Body)> _responses = new Queue<(HttpStatusCode Status, string Body)>();
+        private readonly Queue<Answer> _answers = new Queue<Answer>();
         private readonly List<SeenRequest> _requests = new List<SeenRequest>();
-        private (HttpStatusCode Status, string Body) _last = (HttpStatusCode.OK, SampleListing);
+        private Answer _last = new Answer(HttpStatusCode.OK, SampleListing, JsonContentType, false);
+        private bool _unreachable;
+        private bool _hanging;
 
         public IReadOnlyList<SeenRequest> Requests
         {
@@ -87,12 +92,41 @@ namespace Enqueuer.Tests.AzureDevOps
             }
         }
 
-        // Answers the next request with this status and body. Several calls answer several requests in turn.
-        public void Respond(HttpStatusCode status, string body)
+        // Answers the next request with this status and body, as JSON unless another Content-Type is given. Several
+        // calls answer several requests in turn.
+        public void Respond(HttpStatusCode status, string body, string contentType = JsonContentType)
         {
             lock (_lock)
             {
-                _responses.Enqueue((status, body));
+                _answers.Enqueue(new Answer(status, body, contentType, false));
+            }
+        }
+
+        // Answers the next request with 200 and the start of the sample listing, then drops the connection, as a
+        // network that fails part way through the body
+        public void RespondWithBrokenBody()
+        {
+            lock (_lock)
+            {
+                _answers.Enqueue(new Answer(HttpStatusCode.OK, SampleListing, JsonContentType, true));
+            }
+        }
+
+        // Every request fails as if the network were down, as HttpClient reports a refused connection
+        public void BeUnreachable()
+        {
+            lock (_lock)
+            {
+                _unreachable = true;
+            }
+        }
+
+        // Every request waits until it is cancelled, as a server that never answers
+        public void Hang()
+        {
+            lock (_lock)
+            {
+                _hanging = true;
             }
         }
 
@@ -104,23 +138,34 @@ namespace Enqueuer.Tests.AzureDevOps
             services.Configure<HttpStandardResilienceOptions>(AzureDevOpsRepositoryClient.ResiliencePipelineName, options => options.Retry.Delay = TimeSpan.Zero);
         }
 
-        // The real client, registered as Program registers it, with this fake beneath it
-        public ServiceProvider BuildServices(string organizationUrl, string pat)
+        // The real client, registered as Program registers it, with this fake beneath it. A test can change the retry
+        // and timeout options further, such as shortening the timeouts.
+        public ServiceProvider BuildServices(string organizationUrl, string pat, Action<HttpStandardResilienceOptions>? configureResilience = null)
         {
             ServiceCollection services = new ServiceCollection();
             services.AddSingleton(Options.Create(new AzureDevOpsOptions { OrganizationUrl = organizationUrl, Pat = pat }));
             AzureDevOpsRepositoryClient.Register(services);
             ReplaceAzureDevOps(services);
 
+            if (configureResilience != null)
+            {
+                services.Configure(AzureDevOpsRepositoryClient.ResiliencePipelineName, configureResilience);
+            }
+
             return services.BuildServiceProvider();
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            (HttpStatusCode Status, string Body) response;
+            Answer answer;
+            bool unreachable;
+            bool hanging;
 
             lock (_lock)
             {
+                unreachable = _unreachable;
+                hanging = _hanging;
+
                 _requests.Add(new SeenRequest(
                     request.Method,
                     request.RequestUri!.AbsoluteUri,
@@ -128,22 +173,82 @@ namespace Enqueuer.Tests.AzureDevOps
                     request.Headers.TryGetValues("X-TFS-FedAuthRedirect", out IEnumerable<string>? redirect) ? string.Join(",", redirect) : null,
                     request.Headers.UserAgent.ToString()));
 
-                if (_responses.Count > 0)
+                if (_answers.Count > 0)
                 {
-                    _last = _responses.Dequeue();
+                    _last = _answers.Dequeue();
                 }
 
-                response = _last;
+                answer = _last;
             }
 
-            return Task.FromResult(new HttpResponseMessage(response.Status)
+            if (unreachable)
             {
-                Content = new StringContent(response.Body, Encoding.UTF8, "application/json"),
+                throw new HttpRequestException("No connection could be made because the target machine actively refused it. (dev.azure.com:443)");
+            }
+
+            if (hanging)
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
+            byte[] body = Encoding.UTF8.GetBytes(answer.Body);
+            HttpContent content = answer.BreakBody
+                ? new StreamContent(new BrokenStream(body, body.Length / 2))
+                : new ByteArrayContent(body);
+            content.Headers.TryAddWithoutValidation("Content-Type", answer.ContentType);
+
+            return new HttpResponseMessage(answer.Status)
+            {
+                Content = content,
                 RequestMessage = request
-            });
+            };
         }
 
         // What the fake was sent: the parts the tests check
         internal sealed record SeenRequest(HttpMethod Method, string Url, string? Authorization, string? FedAuthRedirect, string UserAgent);
+
+        private sealed record Answer(HttpStatusCode Status, string Body, string ContentType, bool BreakBody);
+
+        // Gives the first bytes of the body, then fails as a dropped connection does
+        private sealed class BrokenStream : MemoryStream
+        {
+            private readonly int _breakAt;
+
+            public BrokenStream(byte[] body, int breakAt)
+                : base(body)
+            {
+                _breakAt = breakAt;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                ThrowIfPastBreak();
+                return base.Read(buffer, offset, Math.Min(count, _breakAt - (int)Position));
+            }
+
+            public override int Read(Span<byte> buffer)
+            {
+                ThrowIfPastBreak();
+                return base.Read(buffer.Slice(0, Math.Min(buffer.Length, _breakAt - (int)Position)));
+            }
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                return ValueTask.FromResult(Read(buffer.Span));
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                return Task.FromResult(Read(buffer, offset, count));
+            }
+
+            private void ThrowIfPastBreak()
+            {
+                if (Position >= _breakAt)
+                {
+                    throw new IOException("Unable to read data from the transport connection: An existing connection was forcibly closed by the remote host.");
+                }
+            }
+        }
     }
 }

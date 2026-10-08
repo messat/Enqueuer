@@ -108,8 +108,8 @@ namespace Enqueuer.Configuration
 
 | Setting | Rule | When it is wrong |
 |---|---|---|
-| `OrganizationUrl` | Required. An absolute `https` URL with no user name or password in it. A trailing `/` is ignored | `Enqueuer:AzureDevOps:OrganizationUrl must be an https URL such as https://dev.azure.com/<organisation>, with no user name in it` |
-| `Pat` | Required | `Enqueuer:AzureDevOps:Pat is required. Locally, set the Enqueuer__AzureDevOps__Pat user environment variable to the scanner's personal access token, which has Code (Read).` A failure message never includes the value |
+| `OrganizationUrl` | Required. An absolute `https` URL with no user name or password, query string or fragment in it. A trailing `/` is ignored | `Enqueuer:AzureDevOps:OrganizationUrl must be an https URL such as https://dev.azure.com/<organisation>, with no user name, query string or fragment in it` (query string and fragment added after the branch review) |
+| `Pat` | Required, with no space, line break or quote mark at either end (added after the branch review: one copied with the token would read as an expired PAT) | `Enqueuer:AzureDevOps:Pat is required. Locally, set the Enqueuer__AzureDevOps__Pat user environment variable to the scanner's personal access token, which has Code (Read).` A failure message never includes the value |
 
 The scanner also accepts `file` URLs, for its bare test repositories. The enqueuer's tests fake the HTTP handler instead, so it accepts `https` only.
 
@@ -258,7 +258,7 @@ The checks run in the order of the table, so a disabled empty repository is skip
 
 | Setting | Required | `Development` | Notes |
 |---|---|---|---|
-| `Enqueuer:AzureDevOps:OrganizationUrl` | Yes | `https://dev.azure.com/BlacklightInternalsMo` | An absolute `https` URL with no user name |
+| `Enqueuer:AzureDevOps:OrganizationUrl` | Yes | `https://dev.azure.com/BlacklightInternalsMo` | An absolute `https` URL with no user name, query string or fragment |
 | `Enqueuer:AzureDevOps:Pat` | Yes | | Locally the user environment variable `Enqueuer__AzureDevOps__Pat`; in Azure a Key Vault secret reference (Issue 6). Never in an appsettings file |
 
 `AzureDevOpsOptions` is a new group (RepoScanner ADR-022), bound, validated and checked at start-up like `QueueOptions`.
