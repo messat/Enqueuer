@@ -9,7 +9,7 @@ namespace Enqueuer
         // Azure DevOps or the queue could not be reached, a send failed, or something else went wrong
         public const int Failure = 1;
 
-        // Settings are missing or invalid, or the queue is missing, so the enqueuer did not start
+        // Settings are missing or invalid, so the enqueuer did not start, or the queue is missing
         public const int InvalidConfiguration = 2;
     }
 }

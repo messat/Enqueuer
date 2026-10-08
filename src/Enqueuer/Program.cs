@@ -76,8 +76,8 @@ namespace Enqueuer
         // Configures the host without running it, so tests can build it and inspect the services.
         public static HostApplicationBuilder CreateBuilder(string[] args)
         {
-            // Sets up configuration (appsettings.json, user-secrets in Development,
-            // environment variables, command line), dependency injection and default logging.
+            // Sets up configuration (appsettings files, environment variables, command line),
+            // dependency injection and default logging.
             // Content root is the app's own folder, so appsettings files are found wherever
             // the app is started from (dotnet run from the repo root, or /app in the container).
             HostApplicationBuilderSettings settings = new HostApplicationBuilderSettings

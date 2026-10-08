@@ -29,7 +29,7 @@ Settings are read from appsettings files, then environment variables, then the c
 |---|---|---|---|
 | `Enqueuer:Queue:Name` | Yes | `scan-nightly` | 3 to 63 lowercase letters, numbers and hyphens |
 | `Enqueuer:Queue:ConnectionString` | One of these two | `UseDevelopmentStorage=true` | Local only (Azurite) |
-| `Enqueuer:Queue:ServiceUri` | One of these two | | Azure only, with the job's managed identity (RepoScanner ADR-007) |
+| `Enqueuer:Queue:ServiceUri` | One of these two | | Azure only, with the job's managed identity (RepoScanner ADR-007). An absolute `https` URL, such as `https://<account>.queue.core.windows.net` |
 
 As environment variables, `:` becomes `__`, for example `Enqueuer__Queue__Name`.
 
@@ -39,4 +39,4 @@ As environment variables, `:` becomes `__`, for example `Enqueuer__Queue__Name`.
 |---|---|
 | 0 | Every listed repository was queued, or there was nothing to queue |
 | 1 | Azure DevOps or the queue could not be reached, a send failed, or something else went wrong |
-| 2 | A setting is missing or invalid, or the queue is missing, so the enqueuer did not start |
+| 2 | A setting is missing or invalid, so the enqueuer did not start, or the queue is missing |

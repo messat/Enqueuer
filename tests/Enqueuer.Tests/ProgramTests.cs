@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,9 +14,14 @@ namespace Enqueuer.Tests
     [TestFixture]
     public class ProgramTests
     {
+        // Every run names its environment on the command line, which overrides DOTNET_ENVIRONMENT: in a shell
+        // where that is Development, appsettings.Development.json would otherwise fill in the settings a test
+        // leaves out
+
         // Valid queue settings passed as command-line arguments, the last configuration source to be read
         private static readonly string[] ValidArgs =
         {
+            "--environment", "Test",
             "--Enqueuer:Queue:Name", "scan-test",
             "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
         };
@@ -25,14 +29,32 @@ namespace Enqueuer.Tests
         // Queue settings with the required Name missing
         private static readonly string[] ArgsWithoutQueueName =
         {
+            "--environment", "Test",
             "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
         };
 
         // Queue settings with a Name Azure Storage would refuse (capitals and an underscore)
         private static readonly string[] ArgsWithInvalidQueueName =
         {
+            "--environment", "Test",
             "--Enqueuer:Queue:Name", "Scan_Nightly",
             "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
+        };
+
+        // Queue settings with a ServiceUri that is not a URL at all
+        private static readonly string[] ArgsWithMalformedServiceUri =
+        {
+            "--environment", "Test",
+            "--Enqueuer:Queue:Name", "scan-test",
+            "--Enqueuer:Queue:ServiceUri", "http://[bad"
+        };
+
+        // Each missing or wrong setting, with words its one line must contain
+        private static readonly TestCaseData[] BadSettings =
+        {
+            new TestCaseData(ArgsWithoutQueueName, "The Name field is required.").SetArgDisplayNames("missing Name"),
+            new TestCaseData(ArgsWithInvalidQueueName, "Name must be 3 to 63 characters").SetArgDisplayNames("wrong Name"),
+            new TestCaseData(ArgsWithMalformedServiceUri, "Enqueuer:Queue:ServiceUri").SetArgDisplayNames("malformed ServiceUri")
         };
 
         [Test]
@@ -71,16 +93,25 @@ namespace Enqueuer.Tests
             Assert.That(exitCode, Is.EqualTo(2));
         }
 
-        // Issue 1 acceptance criterion: ... with one line, and no stack trace
+        // A ServiceUri the configuration binder could not read used to escape validation and exit 1
         [Test]
-        public async Task Main_WithoutQueueName_WritesOneLineWithoutStackTrace()
+        public async Task Main_WithMalformedServiceUri_ReturnsTwo()
         {
-            string output = await CaptureConsoleAsync(() => Program.Main(ArgsWithoutQueueName));
+            int exitCode = await Program.Main(ArgsWithMalformedServiceUri);
+
+            Assert.That(exitCode, Is.EqualTo(2));
+        }
+
+        // Issue 1 acceptance criterion: ... with one line, and no stack trace
+        [TestCaseSource(nameof(BadSettings))]
+        public async Task Main_WithBadSetting_WritesOneLineWithoutStackTrace(string[] args, string expected)
+        {
+            string output = await CaptureConsoleAsync(() => Program.Main(args));
 
             string[] lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             Assert.That(lines, Has.Length.EqualTo(1), output);
             Assert.That(lines[0], Does.Contain("Invalid configuration"));
-            Assert.That(lines[0], Does.Contain("The Name field is required."));
+            Assert.That(lines[0], Does.Contain(expected));
             Assert.That(output, Does.Not.Contain("   at "), "A configuration error should not print a stack trace");
         }
 

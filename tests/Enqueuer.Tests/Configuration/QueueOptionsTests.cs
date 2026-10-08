@@ -1,4 +1,3 @@
-using System;
 using Enqueuer.Configuration;
 using Microsoft.Extensions.Options;
 using NUnit.Framework;
@@ -24,11 +23,27 @@ namespace Enqueuer.Tests.Configuration
         [Test]
         public void Validate_WithNameAndServiceUri_Succeeds()
         {
-            QueueOptions options = new QueueOptions { Name = "scan-nightly", ServiceUri = new Uri("https://example.queue.core.windows.net") };
+            QueueOptions options = new QueueOptions { Name = "scan-nightly", ServiceUri = "https://example.queue.core.windows.net" };
 
             ValidateOptionsResult result = _validator.Validate(null, options);
 
             Assert.That(result.Succeeded, Is.True, result.FailureMessage);
+        }
+
+        // Read as text and checked here, so a bad value is a settings error (exit 2) rather than the
+        // configuration binder failing to make a Uri (exit 1), and only https, which DefaultAzureCredential needs
+        [TestCase("http://[bad")]
+        [TestCase("not-a-uri")]
+        [TestCase("http://example.queue.core.windows.net")]
+        [TestCase("ftp://example.com")]
+        public void Validate_WithServiceUriThatIsNotAnAbsoluteHttpsUrl_FailsNamingTheSetting(string serviceUri)
+        {
+            QueueOptions options = new QueueOptions { Name = "scan-nightly", ServiceUri = serviceUri };
+
+            ValidateOptionsResult result = _validator.Validate(null, options);
+
+            Assert.That(result.Failed, Is.True);
+            Assert.That(result.FailureMessage, Does.Contain("Enqueuer:Queue:ServiceUri"));
         }
 
         [Test]
@@ -61,7 +76,7 @@ namespace Enqueuer.Tests.Configuration
             {
                 Name = "scan-nightly",
                 ConnectionString = "UseDevelopmentStorage=true",
-                ServiceUri = new Uri("https://example.queue.core.windows.net")
+                ServiceUri = "https://example.queue.core.windows.net"
             };
 
             ValidateOptionsResult result = _validator.Validate(null, options);
