@@ -1,7 +1,11 @@
 using System;
 using System.IO;
+using System.Linq;
+using System.Net;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Enqueuer.Tests.AzureDevOps;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -18,19 +22,26 @@ namespace Enqueuer.Tests
         // where that is Development, appsettings.Development.json would otherwise fill in the settings a test
         // leaves out
 
-        // Valid queue settings passed as command-line arguments, the last configuration source to be read
+        // A fake PAT: values starting "your-" are placeholders to RepoScanner's self-scan
+        private const string Pat = "your-test-pat-0001";
+
+        // Valid settings passed as command-line arguments, the last configuration source to be read
         private static readonly string[] ValidArgs =
         {
             "--environment", "Test",
             "--Enqueuer:Queue:Name", "scan-test",
-            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
         };
 
         // Queue settings with the required Name missing
         private static readonly string[] ArgsWithoutQueueName =
         {
             "--environment", "Test",
-            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
         };
 
         // Queue settings with a Name Azure Storage would refuse (capitals and an underscore)
@@ -38,7 +49,9 @@ namespace Enqueuer.Tests
         {
             "--environment", "Test",
             "--Enqueuer:Queue:Name", "Scan_Nightly",
-            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
         };
 
         // Queue settings with a ServiceUri that is not a URL at all
@@ -46,7 +59,30 @@ namespace Enqueuer.Tests
         {
             "--environment", "Test",
             "--Enqueuer:Queue:Name", "scan-test",
-            "--Enqueuer:Queue:ServiceUri", "http://[bad"
+            "--Enqueuer:Queue:ServiceUri", "http://[bad",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
+        };
+
+        // Valid queue settings and no PAT, as on a machine where Enqueuer__AzureDevOps__Pat is not set. The PAT is
+        // blanked on the command line, which is read last, so a developer's own Enqueuer__AzureDevOps__Pat cannot
+        // fill it in (review finding 1).
+        private static readonly string[] ArgsWithoutPat =
+        {
+            "--environment", "Test",
+            "--Enqueuer:Queue:Name", "scan-test",
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat="
+        };
+
+        // Two settings groups wrong at once, as on a new machine: no queue name and no PAT, blanked as above
+        private static readonly string[] ArgsWithoutQueueNameOrPat =
+        {
+            "--environment", "Test",
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat="
         };
 
         // Each missing or wrong setting, with words its one line must contain
@@ -54,25 +90,157 @@ namespace Enqueuer.Tests
         {
             new TestCaseData(ArgsWithoutQueueName, "The Name field is required.").SetArgDisplayNames("missing Name"),
             new TestCaseData(ArgsWithInvalidQueueName, "Name must be 3 to 63 characters").SetArgDisplayNames("wrong Name"),
-            new TestCaseData(ArgsWithMalformedServiceUri, "Enqueuer:Queue:ServiceUri").SetArgDisplayNames("malformed ServiceUri")
+            new TestCaseData(ArgsWithMalformedServiceUri, "Enqueuer:Queue:ServiceUri").SetArgDisplayNames("malformed ServiceUri"),
+            new TestCaseData(ArgsWithoutPat, "Enqueuer__AzureDevOps__Pat").SetArgDisplayNames("missing Pat")
         };
 
+        // Main would reach the real Azure DevOps, so a run that gets as far as listing goes through RunAsync with
+        // FakeAzureDevOps beneath the HTTP client (Issue 2 design, Testing)
         [Test]
-        public async Task Main_WithValidQueueSettings_ReturnsZero()
+        public async Task RunAsync_WithValidSettings_ReturnsZero()
         {
-            int exitCode = await Program.Main(ValidArgs);
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                int exitCode = await Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps);
 
-            Assert.That(exitCode, Is.EqualTo(0));
+                Assert.That(exitCode, Is.EqualTo(0));
+            }
         }
 
         [Test]
-        public async Task Main_WithValidQueueSettings_RunsTheOrchestrator()
+        public async Task RunAsync_WithValidSettings_RunsTheOrchestrator()
         {
-            string output = await CaptureConsoleAsync(() => Program.Main(ValidArgs));
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
 
-            Assert.That(output, Does.Contain("Enqueuer starting in"));
-            Assert.That(output, Does.Contain("scan-test"));
-            Assert.That(output, Does.Contain("No repositories to queue, exiting"));
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(output, Does.Contain("Enqueuer starting in"));
+                    Assert.That(output, Does.Contain("scan-test"));
+                    Assert.That(output, Does.Contain("Listed 3 repositories in https://dev.azure.com/BlacklightInternalsMo"));
+                    Assert.That(azureDevOps.Requests, Has.Count.EqualTo(1));
+                }
+            }
+        }
+
+        // Decision 7 and #108: a refused PAT is fixed by renewing it, not by changing code, so one line and no stack
+        // trace. The scanner logs the same first words, and one alert watches for them.
+        [Test]
+        public async Task RunAsync_WhenAzureDevOpsRefusesThePat_WritesOneLineAndReturnsOne()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.Unauthorized, "{}");
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
+
+                string[] failures = FatalLines(output);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(1));
+                    Assert.That(failures, Has.Length.EqualTo(1), output);
+                    Assert.That(failures[0], Does.Contain("Azure DevOps refused the token, enqueuer stopped: Azure DevOps refused the token in Enqueuer:AzureDevOps:Pat"));
+                    Assert.That(output, Does.Not.Contain("   at "), "a refused PAT should not print a stack trace");
+                }
+            }
+        }
+
+        // Decision 8: any other failure is one line too, such as an organisation that does not exist
+        [Test]
+        public async Task RunAsync_WhenAzureDevOpsCannotListTheRepositories_WritesOneLineAndReturnsOne()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.NotFound, "<html>404 - Page not found</html>");
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
+
+                string[] failures = FatalLines(output);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(1));
+                    Assert.That(failures, Has.Length.EqualTo(1), output);
+                    Assert.That(failures[0], Does.Contain("Azure DevOps could not list the repositories, enqueuer stopped: Repositories could not be listed from https://dev.azure.com/BlacklightInternalsMo: Azure DevOps answered 404 (Not Found)."));
+                    Assert.That(output, Does.Not.Contain("   at "), "a failed listing should not print a stack trace");
+                }
+            }
+        }
+
+        // Issue 2, criterion 4: whatever happens, nothing the enqueuer prints holds the PAT, plain or in Base64
+        [TestCase(HttpStatusCode.OK)]
+        [TestCase(HttpStatusCode.Unauthorized)]
+        [TestCase(HttpStatusCode.NotFound)]
+        [TestCase(HttpStatusCode.ServiceUnavailable)]
+        public async Task RunAsync_WhateverAzureDevOpsAnswers_NeverPrintsThePat(HttpStatusCode status)
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(status, status == HttpStatusCode.OK ? FakeAzureDevOps.SampleListing : "");
+
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
+                string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(":" + Pat));
+                bool leaked = output.Contains(Pat, StringComparison.Ordinal) || output.Contains(base64, StringComparison.Ordinal);
+
+                Assert.That(leaked, Is.False, "the PAT is in the output");
+            }
+        }
+
+        // Decision 15: the HTTP client logs every request, and Polly every attempt, at Information. Only their
+        // warnings and errors reach the log.
+        [Test]
+        public async Task RunAsync_WithValidSettings_LogsNoLineFromTheHttpClientOrPolly()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
+
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(output, Does.Not.Contain("System.Net.Http.HttpClient"));
+                    Assert.That(output, Does.Not.Contain("Polly"));
+                }
+            }
+        }
+
+        // Review finding 1: a developer's machine has Enqueuer__AzureDevOps__Pat set, so the "no PAT" arguments must
+        // blank it on the command line, which is read last. Otherwise the test would reach the real Azure DevOps.
+        [Test]
+        public async Task Main_WithoutPat_IgnoresAPatInTheEnvironment()
+        {
+            string? before = Environment.GetEnvironmentVariable("Enqueuer__AzureDevOps__Pat");
+            Environment.SetEnvironmentVariable("Enqueuer__AzureDevOps__Pat", "your-env-pat-0002");
+            try
+            {
+                int exitCode = await Program.Main(ArgsWithoutPat);
+
+                Assert.That(exitCode, Is.EqualTo(2));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("Enqueuer__AzureDevOps__Pat", before);
+            }
+        }
+
+        // Each settings group is checked on its own, so the host reports two wrong groups together: still one line,
+        // naming both, and exit 2 (Issue 2 design, Settings)
+        [Test]
+        public async Task Main_WithTwoSettingsGroupsWrong_WritesOneLineNamingBothAndReturnsTwo()
+        {
+            int exitCode = -1;
+            string output = await CaptureConsoleAsync(async () => exitCode = await Program.Main(ArgsWithoutQueueNameOrPat));
+
+            string[] lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(exitCode, Is.EqualTo(2));
+                Assert.That(lines, Has.Length.EqualTo(1), output);
+                Assert.That(output, Does.Contain("Invalid configuration"));
+                Assert.That(output, Does.Contain("The Name field is required."));
+                Assert.That(output, Does.Contain("Enqueuer__AzureDevOps__Pat"));
+            }
         }
 
         // Issue 1 acceptance criterion: a missing setting exits 2
@@ -170,6 +338,14 @@ namespace Enqueuer.Tests
             {
                 return Task.CompletedTask;
             }
+        }
+
+        // The lines Serilog wrote at Fatal, the level Program uses for the reason it stopped
+        private static string[] FatalLines(string output)
+        {
+            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.Contains(" FTL] ", StringComparison.Ordinal))
+                .ToArray();
         }
 
         // Runs the given code with the console redirected, and returns everything it wrote

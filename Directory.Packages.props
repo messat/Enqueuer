@@ -18,6 +18,12 @@
     <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.12" />
   </ItemGroup>
 
+  <!-- Azure DevOps: the named HTTP client with retries and timeouts (Issue 2 design, decision 9). Brings
+       Microsoft.Extensions.Http with it. Added 2026-10-08 at RepoScanner's version. -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.10.0" />
+  </ItemGroup>
+
   <!-- Logging -->
   <ItemGroup>
     <PackageVersion Include="Serilog.Extensions.Hosting" Version="10.0.0" />
