@@ -46,6 +46,25 @@ namespace Enqueuer.Tests.Configuration
             Assert.That(result.FailureMessage, Does.Contain("Enqueuer:Queue:ServiceUri"));
         }
 
+        // Issue 3 is the first to read the connection string, so one that cannot be read is a settings error, exit 2 with
+        // one line, like any other. The message never holds the value, which may hold an account key (final review of
+        // #110, finding 5).
+        [TestCase("UseDevelopmentStorage=ture")]
+        [TestCase("not a connection string")]
+        public void Validate_WithConnectionStringThatIsNotOne_FailsNamingTheSettingNotTheValue(string connectionString)
+        {
+            QueueOptions options = new QueueOptions { Name = "scan-nightly", ConnectionString = connectionString };
+
+            ValidateOptionsResult result = _validator.Validate(null, options);
+
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(result.Failed, Is.True);
+                Assert.That(result.FailureMessage, Does.Contain("Enqueuer:Queue:ConnectionString"));
+                Assert.That(result.FailureMessage, Does.Not.Contain(connectionString));
+            }
+        }
+
         [Test]
         public void Validate_WithoutName_FailsNamingTheSetting()
         {

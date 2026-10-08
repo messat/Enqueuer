@@ -24,6 +24,13 @@
     <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.10.0" />
   </ItemGroup>
 
+  <!-- The storage queue: Azurite's connection string locally, the job's managed identity in Azure (Issue 3 design,
+       decisions 8 and 20). Added 2026-10-08 at RepoScanner's versions. -->
+  <ItemGroup>
+    <PackageVersion Include="Azure.Storage.Queues" Version="12.27.1" />
+    <PackageVersion Include="Azure.Identity" Version="1.21.0" />
+  </ItemGroup>
+
   <!-- Logging -->
   <ItemGroup>
     <PackageVersion Include="Serilog.Extensions.Hosting" Version="10.0.0" />

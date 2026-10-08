@@ -12,6 +12,10 @@
     <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
     <!-- IHttpClientFactory and the standard retry and timeout handler, for the Azure DevOps call -->
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
+    <!-- QueueClient, for sending the scan requests to scan-nightly -->
+    <PackageReference Include="Azure.Storage.Queues" />
+    <!-- DefaultAzureCredential: the job's managed identity in Azure, with no secret -->
+    <PackageReference Include="Azure.Identity" />
     <!-- Plugs Serilog into the host as the logger behind ILogger<T> -->
     <PackageReference Include="Serilog.Extensions.Hosting" />
     <!-- Serilog output to the console (stdout), which Container Apps collects -->

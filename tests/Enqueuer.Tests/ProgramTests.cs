@@ -5,7 +5,10 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Azure;
+using Azure.Storage.Queues;
 using Enqueuer.Tests.AzureDevOps;
+using Enqueuer.Tests.Queue;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -24,6 +27,17 @@ namespace Enqueuer.Tests
 
         // A fake PAT: values starting "your-" are placeholders to RepoScanner's self-scan
         private const string Pat = "your-test-pat-0001";
+
+        // One repository to scan, so the run reaches the queue. The default sample listing skips all of its own, so the
+        // tests that use it send nothing and need no queue fake (Issue 3 design, Testing).
+        private const string OneToScan = """
+            {
+              "count": 1,
+              "value": [
+                { "id": "0f8fad5b-d9cb-469f-a165-70867728950e", "name": "victim-repo", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/main" }
+              ]
+            }
+            """;
 
         // Valid settings passed as command-line arguments, the last configuration source to be read
         private static readonly string[] ValidArgs =
@@ -64,6 +78,16 @@ namespace Enqueuer.Tests
             "--Enqueuer:AzureDevOps:Pat", Pat
         };
 
+        // Queue settings with a connection string the storage SDK cannot read, as with a typo
+        private static readonly string[] ArgsWithMalformedConnectionString =
+        {
+            "--environment", "Test",
+            "--Enqueuer:Queue:Name", "scan-test",
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=ture",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
+        };
+
         // Valid queue settings and no PAT, as on a machine where Enqueuer__AzureDevOps__Pat is not set. The PAT is
         // blanked on the command line, which is read last, so a developer's own Enqueuer__AzureDevOps__Pat cannot
         // fill it in (review finding 1).
@@ -91,6 +115,7 @@ namespace Enqueuer.Tests
             new TestCaseData(ArgsWithoutQueueName, "The Name field is required.").SetArgDisplayNames("missing Name"),
             new TestCaseData(ArgsWithInvalidQueueName, "Name must be 3 to 63 characters").SetArgDisplayNames("wrong Name"),
             new TestCaseData(ArgsWithMalformedServiceUri, "Enqueuer:Queue:ServiceUri").SetArgDisplayNames("malformed ServiceUri"),
+            new TestCaseData(ArgsWithMalformedConnectionString, "Enqueuer:Queue:ConnectionString").SetArgDisplayNames("malformed ConnectionString"),
             new TestCaseData(ArgsWithoutPat, "Enqueuer__AzureDevOps__Pat").SetArgDisplayNames("missing Pat")
         };
 
@@ -165,6 +190,89 @@ namespace Enqueuer.Tests
                     Assert.That(failures, Has.Length.EqualTo(1), output);
                     Assert.That(failures[0], Does.Contain("Azure DevOps could not list the repositories, enqueuer stopped: Repositories could not be listed from https://dev.azure.com/BlacklightInternalsMo: Azure DevOps answered 404 (Not Found)."));
                     Assert.That(output, Does.Not.Contain("   at "), "a failed listing should not print a stack trace");
+                }
+            }
+        }
+
+        // Issue 3, criterion 1, through the whole program: the repository's request lands on the queue
+        [Test]
+        public async Task RunAsync_WithARepositoryToScan_SendsItAndReturnsZero()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, OneToScan);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(0));
+                    Assert.That(queue.Sent, Has.Count.EqualTo(1));
+                    Assert.That(output, Does.Contain("Sent 1 scan requests to scan-test"));
+                }
+            }
+        }
+
+        // Issue 3, criterion 3 and decision 10: a missing queue is fixed like a setting, so one line and exit 2
+        [Test]
+        public async Task RunAsync_WhenTheQueueIsMissing_WritesOneLineAndReturnsTwo()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, OneToScan);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+                queue.FailSend(1, new RequestFailedException(404, "The specified queue does not exist.", "QueueNotFound", null));
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                string[] failures = FatalLines(output);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(2));
+                    Assert.That(failures, Has.Length.EqualTo(1), output);
+                    Assert.That(failures[0], Does.Contain("Queue missing, enqueuer stopped: The queue scan-test does not exist. Create it, or correct Enqueuer:Queue:Name."));
+                    Assert.That(output, Does.Not.Contain("   at "), "a missing queue should not print a stack trace");
+                }
+            }
+        }
+
+        // Issue 3, criterion 3 and decision 13: a failed send is one line giving Azure's status and error code, exit 1
+        [Test]
+        public async Task RunAsync_WhenASendFails_WritesOneLineAndReturnsOne()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, OneToScan);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+                queue.FailSend(1, new RequestFailedException(
+                    403, "Service request failed.\r\nStatus: 403\r\nHeaders:\r\nx-ms-request-id: 1234", "AuthorizationPermissionMismatch", null));
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                string[] failures = FatalLines(output);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(1));
+                    Assert.That(failures, Has.Length.EqualTo(1), output);
+                    Assert.That(failures[0], Does.Contain("Scan requests could not be sent, enqueuer stopped: The scan request for Kudos Wall/victim-repo could not be sent to scan-test: Azure answered 403 (AuthorizationPermissionMismatch)."));
+                    Assert.That(output, Does.Not.Contain("   at "), "a failed send should not print a stack trace");
+                    Assert.That(output, Does.Not.Contain("Headers"), "the SDK's own message should not be printed");
                 }
             }
         }
@@ -270,6 +378,16 @@ namespace Enqueuer.Tests
             Assert.That(exitCode, Is.EqualTo(2));
         }
 
+        // A connection string the SDK cannot read used to pass validation and fail when the queue client was built,
+        // printing a stack trace and exiting 1 (final review of #110, finding 5)
+        [Test]
+        public async Task Main_WithMalformedConnectionString_ReturnsTwo()
+        {
+            int exitCode = await Program.Main(ArgsWithMalformedConnectionString);
+
+            Assert.That(exitCode, Is.EqualTo(2));
+        }
+
         // Issue 1 acceptance criterion: ... with one line, and no stack trace
         [TestCaseSource(nameof(BadSettings))]
         public async Task Main_WithBadSetting_WritesOneLineWithoutStackTrace(string[] args, string expected)
@@ -310,6 +428,22 @@ namespace Enqueuer.Tests
                 ILoggerFactory loggerFactory = host.Services.GetRequiredService<ILoggerFactory>();
 
                 Assert.That(loggerFactory, Is.TypeOf<SerilogLoggerFactory>());
+            }
+        }
+
+        // Decision 8: the client is built from Enqueuer:Queue, and the orchestrator gets the sender over it
+        [Test]
+        public void CreateBuilder_WhenBuilt_HasAClientForTheNamedQueue()
+        {
+            HostApplicationBuilder builder = Program.CreateBuilder(ValidArgs);
+
+            using (IHost host = builder.Build())
+            {
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(host.Services.GetRequiredService<QueueClient>().Name, Is.EqualTo("scan-test"));
+                    Assert.That(host.Services.GetRequiredService<EnqueueOrchestrator>(), Is.Not.Null);
+                }
             }
         }
 

@@ -1,8 +1,10 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Enqueuer.AzureDevOps;
 using Enqueuer.Configuration;
+using Enqueuer.Queue;
 using Enqueuer.Repositories;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -11,7 +13,7 @@ using Microsoft.Extensions.Options;
 namespace Enqueuer
 {
     // Runs one execution of the enqueuer job: list every repository, send one scan request each,
-    // then return. The listing is Issue 2 and the sending Issue 3; until then nothing is sent.
+    // then return. The listing is Issue 2 and the sending Issue 3.
     public sealed class EnqueueOrchestrator
     {
         private readonly ILogger<EnqueueOrchestrator> _logger;
@@ -19,19 +21,22 @@ namespace Enqueuer
         private readonly QueueOptions _queueOptions;
         private readonly AzureDevOpsOptions _azureDevOpsOptions;
         private readonly AzureDevOpsRepositoryClient _repositoryClient;
+        private readonly ScanRequestSender _sender;
 
         public EnqueueOrchestrator(
             ILogger<EnqueueOrchestrator> logger,
             IHostEnvironment environment,
             IOptions<QueueOptions> queueOptions,
             IOptions<AzureDevOpsOptions> azureDevOpsOptions,
-            AzureDevOpsRepositoryClient repositoryClient)
+            AzureDevOpsRepositoryClient repositoryClient,
+            ScanRequestSender sender)
         {
             _logger = logger;
             _environment = environment;
             _queueOptions = queueOptions.Value;
             _azureDevOpsOptions = azureDevOpsOptions.Value;
             _repositoryClient = repositoryClient;
+            _sender = sender;
         }
 
         public async Task RunAsync(CancellationToken cancellationToken)
@@ -65,7 +70,24 @@ namespace Enqueuer
                 _logger.LogWarning("Azure DevOps listed no repositories in {OrganizationUrl}. Check that the PAT's owner can see its projects", _azureDevOpsOptions.OrganizationUrl);
             }
 
-            _logger.LogInformation("Nothing sent: sending scan requests arrives in Issue 3");
+            // One at a time, in the order listed (Issue 3 design, decision 17). A send that still fails after the SDK's
+            // retries throws and ends the run here: the requests already sent stay on the queue (decision 12).
+            foreach (RepositoryToScan repository in selection.ToScan)
+            {
+                // A new correlation ID for each message; the scanner keeps it on its scan run and log lines (decision 4)
+                ScanRequest request = ScanRequest.For(repository, Guid.NewGuid());
+                await _sender.SendAsync(request, cancellationToken);
+
+                // Logged only once sent, so after a failure these lines are exactly the requests on the queue
+                // (decision 15)
+                _logger.LogInformation(
+                    "Queued {ProjectName}/{RepositoryName} with correlation {CorrelationId}",
+                    request.ProjectName,
+                    request.RepositoryName,
+                    request.CorrelationId);
+            }
+
+            _logger.LogInformation("Sent {SentCount} scan requests to {QueueName}", selection.ToScan.Count, _queueOptions.Name);
         }
     }
 }
