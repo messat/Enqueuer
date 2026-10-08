@@ -4,8 +4,9 @@
     Central Package Management. Every NuGet package version used anywhere in the
     repo is set here, once. Each .csproj still lists the packages it uses with
     <PackageReference Include="..." />, but without a Version attribute.
-    Versions match RepoScanner's Directory.Packages.props, so both apps build and
-    test against the same packages (ENQ-ADR-001).
+    Versions were copied from RepoScanner's Directory.Packages.props on 2026-10-08.
+    They are not kept in step: a later change to either is not carried to the
+    other (ENQ-ADR-001).
   -->
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
