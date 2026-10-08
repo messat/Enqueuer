@@ -60,23 +60,47 @@ When the PAT is renewed, update both variables. The PAT never goes in an appsett
 One line per skipped repository with its reason, then the totals. A repository is skipped when it is disabled, in maintenance, or empty (no default branch); forks are queued like any other. Then one `Queued` line per scan request sent, with its correlation ID, and how many were sent. For example, against BlacklightInternalsMo and Azurite on 2026-10-08:
 
 ```
-[19:15:08 INF] Enqueuer.EnqueueOrchestrator: Enqueuer starting in Development for queue scan-nightly
-[19:15:08 INF] Enqueuer.EnqueueOrchestrator: Listed 5 repositories in https://dev.azure.com/BlacklightInternalsMo: 5 to queue, 0 skipped
-[19:15:09 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/victim-repo with correlation 7b7ebe86-b7ac-487f-984b-29ea19d88dee
-[19:15:09 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/Power Platform ALM with correlation 7840f525-4e40-4546-8a9f-12397f0bb03e
-[19:15:09 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/Kudos-Wall with correlation b8a56615-9cf5-43e9-8900-3ee01db3a1d1
-[19:15:09 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/ProblemApp with correlation aaa0a43c-8285-49c1-9bca-45238e767e87
-[19:15:09 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/DynamicsWorkbench with correlation ac333c1c-4e88-44d4-828b-512bb77abd26
-[19:15:09 INF] Enqueuer.EnqueueOrchestrator: Sent 5 scan requests to scan-nightly
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Enqueuer starting in Development for queue scan-nightly
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Listed 5 repositories in https://dev.azure.com/BlacklightInternalsMo: 5 to queue, 0 skipped
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/victim-repo with correlation a0a59d91-cf9f-46ae-bf2b-02d5e9e5f299
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/Power Platform ALM with correlation d7182a28-1cac-4fec-aa12-f3875d44c062
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/Kudos-Wall with correlation 33b2bd19-70c3-488c-8f13-ecdd4e9b4596
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/ProblemApp with correlation 21a2be97-52f3-4ef6-9dd8-ddcb60a60f80
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/DynamicsWorkbench with correlation 38ff2362-3dfc-4066-9178-b97c9d4da765
+[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Sent 5 scan requests to scan-nightly
 ```
 
 A skipped repository looks like `Skipped Kudos Wall/ProblemApp: Disabled`. If Azure DevOps lists none at all, a warning says to check what the PAT's owner can see. The PAT is never logged.
 
-The scanner keeps each correlation ID on the scan run it makes from that request, so `SELECT Status FROM ScanRuns WHERE CorrelationId = '<id>'` in its database finds it. To see the requests before the scanner takes them, peek at the queue, which changes nothing:
+## Scan what it queued
 
-```
-az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true"
-```
+To see RepoScanner's scanner take a run's requests, run it locally after the enqueuer, as on 2026-10-08 (#111). It needs the scanner's one-off setup from RepoScanner's README: **Scan from the queue locally**, for its PAT, and **Database and migrations**, for SQL Server Express, the `RepoScanner` database and `Scanner__Database__ConnectionString`.
+
+1. Check the queue is empty, so the scanner scans only this run's requests. Peeking changes nothing:
+
+   ```
+   az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true"
+   ```
+
+   If it is not empty, those requests are not this run's: decide what to do with them first, as the scanner would scan them too.
+
+2. Run the enqueuer (`dotnet run --project src/Enqueuer`) and keep the correlation IDs from its `Queued` lines.
+3. Peek again: one message per `Queued` line, each plain JSON beginning `{"schemaVersion":1,`.
+4. Run the scanner, from RepoScanner's folder: `dotnet run --project src/RepoScanner.Scanner`. It clones and scans each repository in turn, and ends with one line counting them, such as `Stopped taking messages from scan-nightly: queue empty. 5 scanned, 0 failed, 0 skipped, 0 poisoned`: one scanned for each `Queued` line.
+5. Find each request's scan run by its correlation ID:
+
+   ```
+   sqlcmd -S .\SQLEXPRESS -E -C -d RepoScanner -h -1 -W -s "|" -Q "SET NOCOUNT ON; SELECT s.CorrelationId, r.Name, r.AzureDevOpsId, s.TriggerType, s.Status FROM ScanRuns s JOIN Repositories r ON r.Id = s.RepositoryId WHERE s.CorrelationId IN ('<id>', '<id>')"
+   ```
+
+   One row per request, `Nightly` because it came from `scan-nightly`, under the repository's real Azure DevOps ID. On 2026-10-08, for the first two requests of the run above (SQL Server prints GUIDs in capitals):
+
+   ```
+   A0A59D91-CF9F-46AE-BF2B-02D5E9E5F299|victim-repo|A94E21F6-EDD0-4FA7-BE1E-100495DE6249|Nightly|Completed
+   D7182A28-1CAC-4FEC-AA12-F3875D44C062|Power Platform ALM|0BBCB27B-B2B1-47EB-9553-1AA8D23DE74E|Nightly|Completed
+   ```
+
+The same correlation ID is on every scanner log line about that request, so it also finds the scan in the scanner's log.
 
 ## Configuration
 
@@ -132,5 +156,6 @@ The reason in brackets is repeated once for each try.
 - A missing queue is found only when there is something to send, after Azure DevOps has been called. With no repository to scan, the enqueuer exits 0 without touching the queue.
 - After a failed send, the requests already sent stay on the queue, and a re-run sends every repository again. Until RepoScanner Issue 13 (#76) drops requests already satisfied, those repositories are scanned twice, which is harmless: findings are matched on fingerprint.
 - One send that keeps timing out takes about 10 minutes across its 6 attempts of up to 100 seconds each.
+- A missing queue gives exit code 2 locally. In Azure a misspelt queue name may be answered `403`, not `404`, because the job's identity may only add messages to `scan-nightly`, so it would exit 1 instead. This is still to be checked when the job is deployed (Issue 6).
 - The enqueuer sends Azure DevOps' repository names unchanged. A name the scanner would refuse, possible only if it was made through the API around Azure DevOps' naming rules, gets that one request moved to `scan-nightly-poison` by the scanner, with its warning.
 - The enqueuer's copy of the scan request is tied to the scanner's only by the contract tests on each side, which read the same example message (ENQ-ADR-001).
