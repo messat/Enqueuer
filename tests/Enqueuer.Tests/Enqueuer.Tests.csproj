@@ -17,6 +17,8 @@
     <PackageReference Include="NUnit.Analyzers" />
     <!-- Measures code coverage during dotnet test and fails the run below the threshold -->
     <PackageReference Include="coverlet.msbuild" />
+    <!-- FakeLogger: records log messages so tests can assert on them -->
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.Testing" />
   </ItemGroup>
 
   <!-- The project under test -->

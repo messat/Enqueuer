@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Enqueuer": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

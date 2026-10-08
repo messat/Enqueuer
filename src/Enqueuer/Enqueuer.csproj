@@ -5,4 +5,25 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Generic Host: configuration, dependency injection and logging -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <!-- ValidateDataAnnotations(): checks [Required], [RegularExpression] etc. on options classes -->
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+    <!-- Plugs Serilog into the host as the logger behind ILogger<T> -->
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <!-- Serilog output to the console (stdout), which Container Apps collects -->
+    <PackageReference Include="Serilog.Sinks.Console" />
+  </ItemGroup>
+
+  <!-- Lets the test project call internal members, such as Program.RunAsync -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Enqueuer.Tests" />
+  </ItemGroup>
+
+  <!-- Copy the settings files next to the built app, where the host looks for them -->
+  <ItemGroup>
+    <None Update="appsettings*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
