@@ -121,6 +121,36 @@ namespace Enqueuer.Tests.AzureDevOps
             }));
         }
 
+        // Decision 12: a fork is listed like any other repository, so a secret committed only in a fork is still found
+        [Test]
+        public async Task ListAsync_AFork_IsListedLikeAnyOtherRepository()
+        {
+            _azureDevOps.Respond(HttpStatusCode.OK, """
+                {
+                  "count": 1,
+                  "value": [
+                    {
+                      "id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+                      "name": "victim-repo-fork",
+                      "project": { "name": "Kudos Wall" },
+                      "defaultBranch": "refs/heads/main",
+                      "isFork": true,
+                      "parentRepository": { "id": "5febef5a-833d-4e14-b9c0-14cb638f91e6", "name": "victim-repo", "isFork": false },
+                      "isDisabled": false,
+                      "isInMaintenance": false
+                    }
+                  ]
+                }
+                """);
+
+            IReadOnlyList<AzureDevOpsRepository> repositories = await ListAsync();
+
+            Assert.That(repositories, Is.EqualTo(new[]
+            {
+                new AzureDevOpsRepository(new Guid("0f8fad5b-d9cb-469f-a165-70867728950e"), "victim-repo-fork", "Kudos Wall", "refs/heads/main", false, false)
+            }));
+        }
+
         [Test]
         public async Task ListAsync_AnEmptyListing_GivesNoRepositories()
         {
