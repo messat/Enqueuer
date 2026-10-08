@@ -138,7 +138,7 @@ GUIDs are written in their usual lower-case form with hyphens. A character JSON 
 | `repositoryName` | Not empty |
 | `defaultBranch` | Not empty, and not starting `refs/` |
 
-The scanner also refuses a `repositoryName` of `.` or `..`, or one holding `\`, `/` or another character a file name cannot hold. The enqueuer sends Azure DevOps' name unchanged and does not repeat that check: Azure DevOps' own naming rules refuse every one of those characters, and a name starting or ending with a period ([Naming restrictions, Git repos](https://learn.microsoft.com/azure/devops/organizations/settings/naming-restrictions#azure-repos), checked on 2026-10-08).
+The scanner also refuses names that could not be folder names: a `projectName` of `.` or `..`, and a `repositoryName` of `.` or `..` or holding `\`, `/` or another character a file name cannot hold. The enqueuer sends Azure DevOps' names unchanged and does not repeat those checks: Azure DevOps' own naming rules refuse a project or repository name starting or ending with a period, and every one of those characters in a repository name ([Naming restrictions](https://learn.microsoft.com/azure/devops/organizations/settings/naming-restrictions), project names and Git repos, checked on 2026-10-08). *Widened to project names after #109's review, 2026-10-08.*
 
 ## Sending (#110)
 

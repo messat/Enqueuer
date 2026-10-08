@@ -27,7 +27,7 @@
 
 Inputs the spec implies but does not test by name, most likely to bite first. Each has its test in Task 1.
 
-1. A repository name holding characters the default JSON encoder escapes, such as `O'Brien & Sons (old)`, or a branch with `+`: written as `'`, `&` and `+`, and read back by `System.Text.Json`, as the scanner reads it, exactly as they were.
+1. A repository name holding characters the default JSON encoder escapes, such as `O'Brien & Sons (old)`, or a branch with `+`: written as `\u0027`, `\u0026` and `\u002B`, and read back by `System.Text.Json`, as the scanner reads it, exactly as they were.
 2. Non-ASCII letters, such as project `Café` and repository `Ölçek`: the same.
 3. A branch with `refs/` further in, such as `feature/refs/x`: valid, because the scanner refuses only a leading `refs/`, so the contract helper must check the start of the branch, not anywhere in it.
 4. A contract helper that passes anything: every contract test built on it would pass for nothing, so it has its own tests, one per rule broken.
