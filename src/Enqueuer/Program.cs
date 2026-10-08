@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
+using Enqueuer.AzureDevOps;
 using Enqueuer.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -60,6 +63,14 @@ namespace Enqueuer
                 Log.Fatal("Invalid configuration, enqueuer not started: {ValidationFailures}", exception.Failures);
                 return ExitCodes.InvalidConfiguration;
             }
+            catch (AggregateException exception) when (exception.InnerExceptions.All(inner => inner is OptionsValidationException))
+            {
+                // Each settings group is checked on its own, so with more than one wrong, as on a new machine without
+                // the queue name or the PAT, the host reports them together: still one line, exit 2
+                IEnumerable<string> failures = exception.InnerExceptions.Cast<OptionsValidationException>().SelectMany(inner => inner.Failures);
+                Log.Fatal("Invalid configuration, enqueuer not started: {ValidationFailures}", failures);
+                return ExitCodes.InvalidConfiguration;
+            }
             catch (Exception exception)
             {
                 // Anything else is unexpected: log it with the full exception so it can be diagnosed
@@ -99,6 +110,10 @@ namespace Enqueuer
                 // The host's own "Hosting failed to start" error is not needed: Main logs every
                 // start-up failure once, with the matching exit code
                 .MinimumLevel.Override("Microsoft.Extensions.Hosting", LogEventLevel.Fatal)
+                // The HTTP client logs every request, and Polly every attempt, at Information: only their
+                // warnings and errors are wanted (Issue 2 design, decision 15)
+                .MinimumLevel.Override("System.Net.Http.HttpClient", LogEventLevel.Warning)
+                .MinimumLevel.Override("Polly", LogEventLevel.Warning)
                 // Lets later code add properties (e.g. CorrelationId, Issue 4) to every log line in a scope
                 .Enrich.FromLogContext()
                 .WriteTo.Console(outputTemplate: ConsoleOutputTemplate),
@@ -113,7 +128,15 @@ namespace Enqueuer
                 .ValidateDataAnnotations()
                 .ValidateOnStart();
 
-            // Register the classes the host can create for us
+            // Azure DevOps settings, read from the Enqueuer:AzureDevOps section and checked the same way
+            builder.Services.AddOptions<AzureDevOpsOptions>()
+                .Bind(builder.Configuration.GetSection(AzureDevOpsOptions.SectionName))
+                .ValidateDataAnnotations()
+                .ValidateOnStart();
+
+            // Register the classes the host can create for us. The Azure DevOps client comes with its named HTTP
+            // client, headers and retries (Issue 2 design, The call).
+            AzureDevOpsRepositoryClient.Register(builder.Services);
             builder.Services.AddSingleton<EnqueueOrchestrator>();
 
             return builder;

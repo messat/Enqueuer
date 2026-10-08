@@ -10,6 +10,8 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <!-- ValidateDataAnnotations(): checks [Required], [RegularExpression] etc. on options classes -->
     <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+    <!-- IHttpClientFactory and the standard retry and timeout handler, for the Azure DevOps call -->
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
     <!-- Plugs Serilog into the host as the logger behind ILogger<T> -->
     <PackageReference Include="Serilog.Extensions.Hosting" />
     <!-- Serilog output to the console (stdout), which Container Apps collects -->

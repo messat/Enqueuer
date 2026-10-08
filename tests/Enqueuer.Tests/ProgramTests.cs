@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Enqueuer.Tests.AzureDevOps;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -18,19 +19,26 @@ namespace Enqueuer.Tests
         // where that is Development, appsettings.Development.json would otherwise fill in the settings a test
         // leaves out
 
-        // Valid queue settings passed as command-line arguments, the last configuration source to be read
+        // A fake PAT: values starting "your-" are placeholders to RepoScanner's self-scan
+        private const string Pat = "your-test-pat-0001";
+
+        // Valid settings passed as command-line arguments, the last configuration source to be read
         private static readonly string[] ValidArgs =
         {
             "--environment", "Test",
             "--Enqueuer:Queue:Name", "scan-test",
-            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
         };
 
         // Queue settings with the required Name missing
         private static readonly string[] ArgsWithoutQueueName =
         {
             "--environment", "Test",
-            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
         };
 
         // Queue settings with a Name Azure Storage would refuse (capitals and an underscore)
@@ -38,7 +46,9 @@ namespace Enqueuer.Tests
         {
             "--environment", "Test",
             "--Enqueuer:Queue:Name", "Scan_Nightly",
-            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true"
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
         };
 
         // Queue settings with a ServiceUri that is not a URL at all
@@ -46,7 +56,26 @@ namespace Enqueuer.Tests
         {
             "--environment", "Test",
             "--Enqueuer:Queue:Name", "scan-test",
-            "--Enqueuer:Queue:ServiceUri", "http://[bad"
+            "--Enqueuer:Queue:ServiceUri", "http://[bad",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo",
+            "--Enqueuer:AzureDevOps:Pat", Pat
+        };
+
+        // Valid queue settings and no PAT, as on a machine where Enqueuer__AzureDevOps__Pat is not set
+        private static readonly string[] ArgsWithoutPat =
+        {
+            "--environment", "Test",
+            "--Enqueuer:Queue:Name", "scan-test",
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo"
+        };
+
+        // Two settings groups wrong at once, as on a new machine: no queue name and no PAT
+        private static readonly string[] ArgsWithoutQueueNameOrPat =
+        {
+            "--environment", "Test",
+            "--Enqueuer:Queue:ConnectionString", "UseDevelopmentStorage=true",
+            "--Enqueuer:AzureDevOps:OrganizationUrl", "https://dev.azure.com/BlacklightInternalsMo"
         };
 
         // Each missing or wrong setting, with words its one line must contain
@@ -54,25 +83,74 @@ namespace Enqueuer.Tests
         {
             new TestCaseData(ArgsWithoutQueueName, "The Name field is required.").SetArgDisplayNames("missing Name"),
             new TestCaseData(ArgsWithInvalidQueueName, "Name must be 3 to 63 characters").SetArgDisplayNames("wrong Name"),
-            new TestCaseData(ArgsWithMalformedServiceUri, "Enqueuer:Queue:ServiceUri").SetArgDisplayNames("malformed ServiceUri")
+            new TestCaseData(ArgsWithMalformedServiceUri, "Enqueuer:Queue:ServiceUri").SetArgDisplayNames("malformed ServiceUri"),
+            new TestCaseData(ArgsWithoutPat, "Enqueuer__AzureDevOps__Pat").SetArgDisplayNames("missing Pat")
         };
 
+        // Main would reach the real Azure DevOps, so a run that gets as far as listing goes through RunAsync with
+        // FakeAzureDevOps beneath the HTTP client (Issue 2 design, Testing)
         [Test]
-        public async Task Main_WithValidQueueSettings_ReturnsZero()
+        public async Task RunAsync_WithValidSettings_ReturnsZero()
         {
-            int exitCode = await Program.Main(ValidArgs);
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                int exitCode = await Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps);
 
-            Assert.That(exitCode, Is.EqualTo(0));
+                Assert.That(exitCode, Is.EqualTo(0));
+            }
         }
 
         [Test]
-        public async Task Main_WithValidQueueSettings_RunsTheOrchestrator()
+        public async Task RunAsync_WithValidSettings_RunsTheOrchestrator()
         {
-            string output = await CaptureConsoleAsync(() => Program.Main(ValidArgs));
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
 
-            Assert.That(output, Does.Contain("Enqueuer starting in"));
-            Assert.That(output, Does.Contain("scan-test"));
-            Assert.That(output, Does.Contain("No repositories to queue, exiting"));
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(output, Does.Contain("Enqueuer starting in"));
+                    Assert.That(output, Does.Contain("scan-test"));
+                    Assert.That(output, Does.Contain("Listed 3 repositories in https://dev.azure.com/BlacklightInternalsMo"));
+                    Assert.That(azureDevOps.Requests, Has.Count.EqualTo(1));
+                }
+            }
+        }
+
+        // Decision 15: the HTTP client logs every request, and Polly every attempt, at Information. Only their
+        // warnings and errors reach the log.
+        [Test]
+        public async Task RunAsync_WithValidSettings_LogsNoLineFromTheHttpClientOrPolly()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
+
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(output, Does.Not.Contain("System.Net.Http.HttpClient"));
+                    Assert.That(output, Does.Not.Contain("Polly"));
+                }
+            }
+        }
+
+        // Each settings group is checked on its own, so the host reports two wrong groups together: still one line,
+        // naming both, and exit 2 (Issue 2 design, Settings)
+        [Test]
+        public async Task Main_WithTwoSettingsGroupsWrong_WritesOneLineNamingBothAndReturnsTwo()
+        {
+            int exitCode = -1;
+            string output = await CaptureConsoleAsync(async () => exitCode = await Program.Main(ArgsWithoutQueueNameOrPat));
+
+            string[] lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(exitCode, Is.EqualTo(2));
+                Assert.That(lines, Has.Length.EqualTo(1), output);
+                Assert.That(output, Does.Contain("Invalid configuration"));
+                Assert.That(output, Does.Contain("The Name field is required."));
+                Assert.That(output, Does.Contain("Enqueuer__AzureDevOps__Pat"));
+            }
         }
 
         // Issue 1 acceptance criterion: a missing setting exits 2
