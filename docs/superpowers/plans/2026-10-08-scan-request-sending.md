@@ -2,21 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The enqueuer has its own copy of the scan request: `docs/contracts/scan-request.example.json` copied from RepoScanner, `ScanRequest` built for a chosen repository with a correlation ID its caller makes, `ScanRequestWriter` writing it as the JSON the scanner reads, and contract tests tying the two to the example.
+**Goal:** The enqueuer sends one scan request per chosen repository to `scan-nightly`, in the format the scanner reads. Task 1 (#109) is the message and its contract tests; Task 2 (#110) sends it, with a missing queue exiting 2 and a failed send exiting 1, each as one line.
 
-**Architecture:** Two small types in a new `Enqueuer.Queue` namespace, with no new package: a record with a static builder, and a static writer using `Utf8JsonWriter`. A test helper, `ScanRequestContract`, holds the scanner's rules and reads the example file through a `RepositoryRoot` helper; #110's orchestrator tests reuse it on every body sent. Nothing is sent yet, and nothing outside the tests calls the new types until #110.
+**Architecture:** Task 1: two small types in a new `Enqueuer.Queue` namespace, a record with a static builder and a static writer using `Utf8JsonWriter`, and a test helper, `ScanRequestContract`, holding the scanner's rules. Task 2: `QueueClients` builds the Azure `QueueClient` from Issue 1's `QueueOptions`; `ScanRequestSender` sends one request and turns Azure's failures into two exceptions `Program` logs as one line each; `EnqueueOrchestrator` sends the chosen repositories one at a time and stops at the first failure. Tests use a hand-written `FakeQueueClient`, so `dotnet test` never reaches Azurite.
 
-**Tech Stack:** .NET 10, `System.Text.Json` (`Utf8JsonWriter`, `JsonNode.DeepEquals`, `JsonDocument`), NUnit 4, coverlet.msbuild, the `az` CLI for the board.
+**Tech Stack:** .NET 10, `System.Text.Json`, `Azure.Storage.Queues` 12.27.1, `Azure.Identity` 1.21.0, NUnit 4, coverlet.msbuild; Azurite 3.37.0 and the `az` CLI 2.87.0 for the manual checks and the board.
 
-**Spec:** [docs/design/2026-10-08-scan-request-sending.md](../../design/2026-10-08-scan-request-sending.md), committed as `40d0f9e` (#81). Read its sections The message (#109) and Testing before starting; this plan argues from it.
+**Spec:** [docs/design/2026-10-08-scan-request-sending.md](../../design/2026-10-08-scan-request-sending.md), committed as `40d0f9e` and amended in `6efcc7d` (#81). Read its sections The message, Sending, When a send fails, The orchestrator, Local setup, README and Testing before starting; this plan argues from it.
 
-**Scope:** task #109 only. #110 and #111 are added to this plan when they are planned.
+**Scope:** #109 (Task 1, done in `5fc67b8`) and #110 (Task 2). #111 is added to this plan when it is planned.
 
 ## Global Constraints
 
 - Branch: `feature/81-scan-request-sending` (already created from `develop`, with the design committed).
-- **Commits:** one per board task, only after the user has reviewed that task's diff. The message starts `This commit` and ends with the task number, `#109`. It never mentions Claude, Opus or any AI tool: no `Co-Authored-By` line. Push and open a pull request only when the user asks.
-- **Board:** set the task to Doing when it starts and to Done when its commit is made: `az boards work-item update --org https://dev.azure.com/Blacklight-Internal --id 109 --state <Doing|Done>`.
+- **Commits:** one per board task, only after the user has reviewed that task's diff. The message starts `This commit` and ends with the task number, such as `#110`. It never mentions Claude, Opus or any AI tool: no `Co-Authored-By` line. Push and open a pull request only when the user asks.
+- **Board:** set the task to Doing when it starts and to Done when its commit is made: `az boards work-item update --org https://dev.azure.com/Blacklight-Internal --id <109|110> --state <Doing|Done>`.
 - **Exact values:** the example's `correlationId` is `5b1c6f3e-8a2d-4e7f-9c1a-2d3e4f5a6b7c` and `repositoryId` `0f8fad5b-d9cb-469f-a165-70867728950e`; `schemaVersion` is `1`; the field names, in this order, are `schemaVersion`, `correlationId`, `repositoryId`, `projectName`, `repositoryName`, `defaultBranch`.
 - **Namespaces:** product code in `Enqueuer.Queue` (`src/Enqueuer/Queue/`); tests in `Enqueuer.Tests.Queue` (`tests/Enqueuer.Tests/Queue/`), and `RepositoryRoot` in `Enqueuer.Tests`.
 - **Code conventions (RepoScanner ADR-021, as in Issues 1 and 2):** classes `sealed` or `static`; explicit types, no `var`; block bodies, no expression bodies; `using (...) { }` blocks; `ImplicitUsings` is off, so every file lists its usings; a comment giving the reason for each non-obvious line, citing the design by decision number. Tests: NUnit, `Method_Condition_Result` names, `Assert.EnterMultipleScope()` for several asserts. NUnit.Analyzers runs with warnings as errors, so never assert on a `const`.
@@ -25,13 +25,25 @@
 
 ## Review Focus
 
-Inputs the spec implies but does not test by name, most likely to bite first. Each has its test in Task 1.
+Inputs the spec implies but does not test by name, most likely to bite first. Each has its test in the task named.
+
+**Task 1 (#109):**
 
 1. A repository name holding characters the default JSON encoder escapes, such as `O'Brien & Sons (old)`, or a branch with `+`: written as `\u0027`, `\u0026` and `\u002B`, and read back by `System.Text.Json`, as the scanner reads it, exactly as they were.
 2. Non-ASCII letters, such as project `Café` and repository `Ölçek`: the same.
 3. A branch with `refs/` further in, such as `feature/refs/x`: valid, because the scanner refuses only a leading `refs/`, so the contract helper must check the start of the branch, not anywhere in it.
 4. A contract helper that passes anything: every contract test built on it would pass for nothing, so it has its own tests, one per rule broken.
 5. The correlation ID and the repository ID swapped, both being GUIDs: the builder and writer tests use the two different GUIDs, so a swap fails them.
+
+**Task 2 (#110):**
+
+1. A bug inside a send, such as an `InvalidOperationException`: it is not dressed up as "could not be sent", and keeps Issue 1's "Enqueuer failed" line with its stack trace, so it can be diagnosed. Only Azure's three kinds of failure are turned into one line.
+2. Azure's own `RequestFailedException` message, which lists every response header over many lines: none of it reaches the one line, only the status and the error code.
+3. A `RequestFailedException` with no error code, such as a `503` from a proxy: the line reads `Azure answered 503.`, with no empty brackets.
+4. The job stopped part way through a send: the `OperationCanceledException` goes through unchanged, not reported as a failed send.
+5. `Enqueuer:Queue:ServiceUri` with a trailing `/`: the client still points at `<account>/scan-nightly`, not at an empty queue name.
+
+The message body being plain text, not Base64 (decision 2), cannot be seen through `FakeQueueClient`: it is checked in Task 2's manual checks, by peeking at the queue.
 
 ---
 
@@ -257,4 +269,189 @@ Stop for the user's review of the diff. Once approved:
 ```bash
 git add docs/contracts/scan-request.example.json src/Enqueuer/Queue tests/Enqueuer.Tests/RepositoryRoot.cs tests/Enqueuer.Tests/Queue
 git commit -m "This commit adds the enqueuer's own copy of the scan request: docs/contracts/scan-request.example.json copied unchanged from RepoScanner; ScanRequest at schema version 1, built for a chosen repository with the correlation ID its caller makes; ScanRequestWriter writing the six fields as compact JSON in the example's names and order; and contract tests that the example's own values are written as the example, and that every request written keeps the scanner's rules, checked by a helper with tests of its own #109"
+```
+
+---
+
+### Task 2: Sending to the queue (#110)
+
+**Files:**
+- Modify: `Directory.Packages.props`, `src/Enqueuer/Enqueuer.csproj`
+- Create: `src/Enqueuer/Queue/QueueClients.cs`, `src/Enqueuer/Queue/ScanRequestSender.cs`, `src/Enqueuer/Queue/ScanQueueNotFoundException.cs`, `src/Enqueuer/Queue/ScanQueueUnavailableException.cs`
+- Modify: `src/Enqueuer/EnqueueOrchestrator.cs`, `src/Enqueuer/Program.cs`, `README.md`
+- Create: `tests/Enqueuer.Tests/Queue/FakeResponse.cs`, `tests/Enqueuer.Tests/Queue/FakeQueueClient.cs` (test helpers)
+- Test: `tests/Enqueuer.Tests/Queue/QueueClientsTests.cs`, `tests/Enqueuer.Tests/Queue/ScanRequestSenderTests.cs` (new); `tests/Enqueuer.Tests/EnqueueOrchestratorTests.cs`, `tests/Enqueuer.Tests/ProgramTests.cs` (modified)
+
+`ExitCodes.cs` is unchanged: its comments already say 1 is "a send failed" and 2 is "the queue is missing".
+
+**Interfaces:**
+- Consumes: from Task 1, `ScanRequest`, `ScanRequest.For(RepositoryToScan repository, Guid correlationId)`, `ScanRequestWriter.Write(ScanRequest request)` returning `string`, and the test helper `ScanRequestContract.ProblemsWith(string body)`. From Issue 1, `Enqueuer.Configuration.QueueOptions` with `Name`, `ConnectionString` and `ServiceUri`, the last two `string?`, exactly one of them set.
+- Produces, for #111 and Issue 4:
+  - `Enqueuer.Queue.QueueClients.Create(QueueOptions options)`, returning `Azure.Storage.Queues.QueueClient`.
+  - `Enqueuer.Queue.ScanRequestSender`: `public ScanRequestSender(QueueClient queue)` and `public Task SendAsync(ScanRequest request, CancellationToken cancellationToken)`.
+  - `Enqueuer.Queue.ScanQueueNotFoundException(string queueName, Exception innerException)` and `Enqueuer.Queue.ScanQueueUnavailableException(string message, Exception innerException)`, both `sealed`, deriving from `Exception`.
+  - `EnqueueOrchestrator`'s constructor gains `ScanRequestSender sender` as its last parameter.
+  - The log lines `Queued {ProjectName}/{RepositoryName} with correlation {CorrelationId}` and `Sent {SentCount} scan requests to {QueueName}`.
+  - The test helper `FakeQueueClient`: `public FakeQueueClient(string name)`; `Sent`, a `List<(string Text, TimeSpan? VisibilityTimeout, TimeSpan? TimeToLive)>` of the sends that succeeded; `Attempts`, an `int` counting every send tried; `FailSend(int attempt, Exception exception)`, making that attempt, counted from 1, throw that exception; `ReplaceQueue(IServiceCollection services)`, registering itself as the `QueueClient`.
+
+- [ ] **Step 1: Set #110 to Doing**
+
+- [ ] **Step 2: Add the two packages**
+
+`Directory.Packages.props`: a new group after the Azure DevOps one, with the comment `<!-- The storage queue: Azurite's connection string locally, the job's managed identity in Azure (Issue 3 design, decisions 8 and 20). Added 2026-10-08 at RepoScanner's versions. -->`, holding `Azure.Storage.Queues` `12.27.1` and `Azure.Identity` `1.21.0`. `src/Enqueuer/Enqueuer.csproj`: a `PackageReference` to each, each with a one-line comment in the style of the others.
+
+Run: `dotnet build Enqueuer.sln` then `dotnet list package --vulnerable --include-transitive`
+Expected: 0 warnings, 0 errors; every project "has no vulnerable packages given the current sources".
+
+- [ ] **Step 3: Write the two test helpers**
+
+`tests/Enqueuer.Tests/Queue/FakeResponse.cs`: RepoScanner's `tests/RepoScanner.Scanner.Tests/Queue/FakeResponse.cs`, in namespace `Enqueuer.Tests.Queue`, `internal`.
+
+`tests/Enqueuer.Tests/Queue/FakeQueueClient.cs`: `internal sealed class FakeQueueClient : QueueClient`, cut down from RepoScanner's to the members in the Interfaces block. It overrides `Name`, and exactly the overload the sender calls, `SendMessageAsync(string messageText, TimeSpan? visibilityTimeout = null, TimeSpan? timeToLive = null, CancellationToken cancellationToken = default)`: each call adds 1 to `Attempts`, throws the exception set for that attempt if there is one, and otherwise adds the call to `Sent` and returns `Response.FromValue(QueuesModelFactory.SendReceipt(...), new FakeResponse(201))`. `ReplaceQueue` is `services.AddSingleton<QueueClient>(this)`: registered after `Program`'s own, it wins.
+
+- [ ] **Step 4: Write the client's and the sender's tests**
+
+`tests/Enqueuer.Tests/Queue/QueueClientsTests.cs`. Building a client makes no network call, so neither test needs Azurite or Azure:
+
+```csharp
+[Test]
+public void Create_WithAConnectionString_PointsAtTheNamedQueueInAzurite()
+{
+    QueueClient client = QueueClients.Create(new QueueOptions { Name = "scan-test", ConnectionString = "UseDevelopmentStorage=true" });
+
+    using (Assert.EnterMultipleScope())
+    {
+        Assert.That(client.Uri, Is.EqualTo(new Uri("http://127.0.0.1:10001/devstoreaccount1/scan-test")));
+        Assert.That(client.Name, Is.EqualTo("scan-test"));
+    }
+}
+
+// A trailing / must not leave the queue name empty (Review Focus, Task 2, 5)
+[TestCase("https://example.queue.core.windows.net")]
+[TestCase("https://example.queue.core.windows.net/")]
+public void Create_WithAServiceUri_PointsAtTheNamedQueueInTheAccount(string serviceUri)
+{
+    QueueClient client = QueueClients.Create(new QueueOptions { Name = "scan-nightly", ServiceUri = serviceUri });
+
+    Assert.That(client.Uri, Is.EqualTo(new Uri("https://example.queue.core.windows.net/scan-nightly")));
+}
+```
+
+`tests/Enqueuer.Tests/Queue/ScanRequestSenderTests.cs`: a `[SetUp]` making `_queue = new FakeQueueClient("scan-test")` and `_sender = new ScanRequestSender(_queue)`, and one request for every test, `new ScanRequest(new Guid("5b1c6f3e-8a2d-4e7f-9c1a-2d3e4f5a6b7c"), new Guid("0f8fad5b-d9cb-469f-a165-70867728950e"), "Kudos Wall", "victim-repo", "main")`. Every `ScanQueueUnavailableException` message starts with the prefix `The scan request for Kudos Wall/victim-repo could not be sent to scan-test: `.
+
+| Test | Set up | Asserts |
+|---|---|---|
+| `SendAsync_ARequest_SendsTheWritersBodyVisibleAtOnceWithTheDefaultLifetime` | nothing | `_queue.Sent` is exactly one `(ScanRequestWriter.Write(request), null, null)` |
+| `SendAsync_WhenTheQueueIsMissing_ThrowsNotFoundNamingTheQueue` | attempt 1 throws `new RequestFailedException(404, "The specified queue does not exist.", "QueueNotFound", null)` | `ScanQueueNotFoundException`; message exactly `The queue scan-test does not exist. Create it, or correct Enqueuer:Queue:Name.`; `InnerException` the same instance |
+| `SendAsync_WhenAzureRefuses_ThrowsUnavailableWithStatusAndErrorCode`, with `[TestCase(403, "AuthorizationPermissionMismatch", "Azure answered 403 (AuthorizationPermissionMismatch).")]` and `[TestCase(503, null, "Azure answered 503.")]` | attempt 1 throws `new RequestFailedException(status, "Service request failed.\r\nStatus: " + status + "\r\nHeaders:\r\nx-ms-request-id: 1234", errorCode, null)` | `ScanQueueUnavailableException`; message exactly the prefix plus the third argument; not containing `Headers`; `InnerException` the same instance (Review Focus, Task 2, 2 and 3) |
+| `SendAsync_WhenTheRetriesRunOut_GivesTheFirstLineOfTheMessage` | attempt 1 throws `new AggregateException("Retry failed after 6 tries.\r\nRetry settings can be adjusted in ClientOptions.Retry.", new RequestFailedException("Connection refused"))` | `ScanQueueUnavailableException`; message exactly the prefix plus `Retry failed after 6 tries.` |
+| `SendAsync_WhenTheIdentityGetsNoToken_GivesTheFirstLineOfTheMessage` | attempt 1 throws `new AuthenticationFailedException("DefaultAzureCredential failed to retrieve a token from the included credentials.\n- EnvironmentCredential authentication unavailable.")` | `ScanQueueUnavailableException`; message exactly the prefix plus `DefaultAzureCredential failed to retrieve a token from the included credentials.` |
+| `SendAsync_WhenCancelled_LetsTheCancellationThrough` | attempt 1 throws `new OperationCanceledException()` | `Assert.ThrowsAsync<OperationCanceledException>` (Review Focus, Task 2, 4) |
+| `SendAsync_WhenSomethingUnexpectedFails_LetsItThrough` | attempt 1 throws `new InvalidOperationException("a bug")` | `Assert.ThrowsAsync<InvalidOperationException>` (Review Focus, Task 2, 1) |
+
+- [ ] **Step 5: Run them to see them fail**
+
+Run: `dotnet test tests/Enqueuer.Tests --filter "FullyQualifiedName~Enqueuer.Tests.Queue" -p:CollectCoverage=false`
+Expected: build FAILS with CS0103 or CS0246 for `QueueClients`, `ScanRequestSender`, `ScanQueueNotFoundException` and `ScanQueueUnavailableException`.
+
+- [ ] **Step 6: Write `QueueClients`, `ScanRequestSender` and the two exceptions**
+
+The signatures and comments are the design's (Sending, When a send fails).
+
+- `QueueClients.Create`: RepoScanner's `QueueClients.Create`, cut to one queue, `options.Name`. `QueueOptions.ServiceUri` is a `string` here, already checked as an absolute `https` URL, so it goes into `QueueUriBuilder` as `new Uri(options.ServiceUri)`.
+- `ScanQueueNotFoundException` builds its own message: `The queue {queueName} does not exist. Create it, or correct Enqueuer:Queue:Name.`
+- `ScanRequestSender.SendAsync` writes the body with `ScanRequestWriter.Write` and calls `SendMessageAsync(body, visibilityTimeout: null, timeToLive: null, cancellationToken)`, the overload `FakeQueueClient` overrides. It catches these, in this order, and nothing else:
+  1. A `RequestFailedException` whose `ErrorCode` is `QueueErrorCode.QueueNotFound`: throws `ScanQueueNotFoundException(_queue.Name, exception)`.
+  2. Any other `RequestFailedException`: the text `Azure answered {Status} ({ErrorCode}).`, or `Azure answered {Status}.` when `ErrorCode` is null or empty.
+  3. An `AggregateException` or an `AuthenticationFailedException`: the text is the first line of the exception's `Message`, as `StringReader.ReadLine` reads it.
+
+  Cases 2 and 3 throw `ScanQueueUnavailableException`, its message `The scan request for {ProjectName}/{RepositoryName} could not be sent to {_queue.Name}: ` followed by that text, with the original as the inner exception.
+
+- [ ] **Step 7: Run them to see them pass**
+
+Same command. Expected: PASS, 37 tests (Task 1's 26, `QueueClientsTests`' 3 and `ScanRequestSenderTests`' 8).
+
+- [ ] **Step 8: Write the orchestrator's and `Program`'s tests**
+
+`EnqueueOrchestratorTests`: `SetUp` adds `_queue = new FakeQueueClient("scan-test")` and passes `new ScanRequestSender(_queue)` as the orchestrator's last argument. The default sample listing skips all three of its repositories, so the tests that send first answer with this listing, a constant in the test class:
+
+```csharp
+// Three repositories to scan, in two projects, and a disabled one among them
+private const string ThreeToScanAndOneDisabled = """
+    {
+      "count": 4,
+      "value": [
+        { "id": "0f8fad5b-d9cb-469f-a165-70867728950e", "name": "victim-repo", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/main" },
+        { "id": "278d5cd2-584d-4b63-824a-2ba458937249", "name": "old-repo", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/main", "isDisabled": true },
+        { "id": "66efb083-777a-4cac-a350-a24b046be6be", "name": "ProblemApp", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/develop" },
+        { "id": "5febef5a-833d-4e14-b9c0-14cb638f91e6", "name": "WebShop", "project": { "name": "Retail" }, "defaultBranch": "refs/heads/main" }
+      ]
+    }
+    """;
+```
+
+A private helper, `FieldIn(string body, string name)`, returns one field of a sent body as a string, read with `JsonDocument`.
+
+| Test | Asserts |
+|---|---|
+| `RunAsync_SendsOneRequestPerRepositoryToScanInListedOrder` | the `repositoryName` of each body in `_queue.Sent` is exactly `victim-repo`, `ProblemApp`, `WebShop`: none for `old-repo` (criterion 1) |
+| `RunAsync_EveryRequestSent_KeepsTheContract` | `ScanRequestContract.ProblemsWith(body)` is empty for every body sent (criterion 2) |
+| `RunAsync_EachRequestSent_HasItsOwnCorrelationId` | the three `correlationId`s are unique and none is `Guid.Empty` (decision 4) |
+| `RunAsync_LogsAQueuedLinePerRequestWithItsCorrelationId` | exactly three records have a `CorrelationId` property, their values the bodies' `correlationId`s in order; the first message is `Queued Kudos Wall/victim-repo with correlation ` followed by the first body's `correlationId` (decision 15) |
+| `RunAsync_EndsWithHowManyWereSent` | the last record's message is `Sent 3 scan requests to scan-test`, its `SentCount` property `"3"` |
+| `RunAsync_WhenTheSecondSendFails_StopsBeforeTheThird` | attempt 2 throws `new RequestFailedException(503, "busy", "ServerBusy", null)`; `RunAsync` throws `ScanQueueUnavailableException`; `_queue.Attempts` is 2; `_queue.Sent` holds `victim-repo`'s only; one `Queued` line; no record with `SentCount` (decision 12) |
+| `RunAsync_NothingToScan_SendsNothingAndSaysSentZero` | the default sample listing; `_queue.Attempts` is 0; the last message is `Sent 0 scan requests to scan-test`. It replaces `RunAsync_UntilIssue3_SaysNothingWasSent`, which is deleted |
+
+`ProgramTests`: a constant `OneToScan`, the first repository of `ThreeToScanAndOneDisabled` alone, with `"count": 1`, and a lambda replacing both fakes, `services => { azureDevOps.ReplaceAzureDevOps(services); queue.ReplaceQueue(services); }`. The existing tests keep the default sample listing, which sends nothing, so they need no queue fake.
+
+| Test | Set up | Asserts |
+|---|---|---|
+| `RunAsync_WithARepositoryToScan_SendsItAndReturnsZero` | `OneToScan` | exit 0; `queue.Sent` has 1 item; the output contains `Sent 1 scan requests to scan-test` |
+| `RunAsync_WhenTheQueueIsMissing_WritesOneLineAndReturnsTwo` | `OneToScan`; attempt 1 throws Step 4's `QueueNotFound` exception | exit 2; exactly one ` FTL] ` line, containing `Queue missing, enqueuer stopped: The queue scan-test does not exist. Create it, or correct Enqueuer:Queue:Name.`; no `   at ` in the output |
+| `RunAsync_WhenASendFails_WritesOneLineAndReturnsOne` | `OneToScan`; attempt 1 throws Step 4's `403` exception | exit 1; exactly one ` FTL] ` line, containing `Scan requests could not be sent, enqueuer stopped: The scan request for Kudos Wall/victim-repo could not be sent to scan-test: Azure answered 403 (AuthorizationPermissionMismatch).`; neither `   at ` nor `Headers` in the output |
+| `CreateBuilder_WhenBuilt_HasAClientForTheNamedQueue` | `Program.CreateBuilder(ValidArgs)`, built | the `QueueClient` service's `Name` is `scan-test`, and `EnqueueOrchestrator` resolves |
+
+- [ ] **Step 9: Run them to see them fail**
+
+Run: `dotnet test tests/Enqueuer.Tests -p:CollectCoverage=false`
+Expected: build FAILS with CS1729, `'EnqueueOrchestrator' does not contain a constructor that takes 6 arguments`.
+
+- [ ] **Step 10: Send from the orchestrator, and register and catch in `Program`**
+
+- `EnqueueOrchestrator`: the design's The orchestrator, steps 6 and 7. The class comment loses "until then nothing is sent". `{QueueName}` is `_queueOptions.Name`, as on the starting line.
+- `Program.CreateBuilder`, before the orchestrator's registration: the `QueueClient` as a singleton built by `QueueClients.Create(services.GetRequiredService<IOptions<QueueOptions>>().Value)`, with a comment that building it makes no network call; then `ScanRequestSender` as a singleton.
+- `Program.RunAsync`: the design's two `catch` blocks, after `AzureDevOpsUnavailableException`'s and before the one for any other exception.
+
+- [ ] **Step 11: Run them to see them pass**
+
+Same command as Step 9. Expected: PASS, 159 tests (138, less the deleted one, plus 11 in `Queue`, 7 in `EnqueueOrchestratorTests` and 4 in `ProgramTests`), 0 failed.
+
+- [ ] **Step 12: Manual checks against Azurite**
+
+They need `Enqueuer__AzureDevOps__Pat` set (check it without printing it: `[Environment]::GetEnvironmentVariable("Enqueuer__AzureDevOps__Pat", "User").Length -gt 0`), Azurite started in its own terminal with `azurite --location c:\azurite_data`, and the queues created as the design's Local setup says. Keep each run's output for the README:
+
+1. `dotnet run --project src/Enqueuer`. Expected: a `Queued` line for each repository Azure DevOps lists to scan, then `Sent N scan requests to scan-nightly`, and `$LASTEXITCODE` 0.
+2. `az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true"`. Expected: N messages, each `content` plain JSON beginning `{"schemaVersion":1,`, not Base64 (decision 2).
+3. `az storage message clear --queue-name scan-nightly --connection-string "UseDevelopmentStorage=true"`, so a later scanner run does not scan these.
+4. `dotnet run --project src/Enqueuer -- --Enqueuer:Queue:Name scan-missing-zz9q1`. Expected: one line starting `Queue missing, enqueuer stopped`, and `$LASTEXITCODE` 2.
+5. Stop Azurite, then `dotnet run --project src/Enqueuer`. Expected: after about 25 seconds of retries, one line starting `Scan requests could not be sent, enqueuer stopped`, and `$LASTEXITCODE` 1. Record whether it shows `Azure answered` (a `RequestFailedException`) or `Retry failed` (an `AggregateException`), as the design asks.
+
+A run that does not match its Expected line is a finding for superpowers:systematic-debugging, not a reason to change the Expected line.
+
+- [ ] **Step 13: README**
+
+The design's README section, for #110: **Run** gains Azurite and the queue (Local setup) before `dotnet run`; **What it logs** shows run 1's lines in place of the `Nothing sent` example; **Exit codes** shows run 4's and run 5's lines; **Known limitations** gains the design's. The end-to-end section with the scanner is #111's.
+
+- [ ] **Step 14: Full build and test**
+
+Run: `dotnet build Enqueuer.sln` then `dotnet test Enqueuer.sln --tl:off`
+Expected: 0 warnings, 0 errors; 159 tests pass; `Enqueuer` at 80% line coverage or above, the new classes fully covered.
+
+- [ ] **Step 15: Review, commit, set #110 to Done**
+
+Stop for the user's review of the diff. Once approved:
+
+```bash
+git add Directory.Packages.props src/Enqueuer tests/Enqueuer.Tests README.md
+git commit -m "This commit sends one scan request per chosen repository to the queue: QueueClients builds the client from Enqueuer:Queue, with Azurite's connection string locally and DefaultAzureCredential in Azure, sending plain text; the orchestrator sends each repository's request with a new correlation ID through ScanRequestSender, one at a time in the order listed, logging a Queued line with its correlation ID and then how many were sent; a missing queue exits 2 with one line starting 'Queue missing', and a send still failing after the storage SDK's retries stops the run and exits 1 with one line giving Azure's status and error code, never the SDK's own message; and the README gains Azurite, the queue and the new lines #110"
 ```
