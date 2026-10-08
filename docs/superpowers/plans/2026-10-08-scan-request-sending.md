@@ -2,21 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The enqueuer sends one scan request per chosen repository to `scan-nightly`, in the format the scanner reads. Task 1 (#109) is the message and its contract tests; Task 2 (#110) sends it, with a missing queue exiting 2 and a failed send exiting 1, each as one line.
+**Goal:** The enqueuer sends one scan request per chosen repository to `scan-nightly`, in the format the scanner reads. Task 1 (#109) is the message and its contract tests; Task 2 (#110) sends it, with a missing queue exiting 2 and a failed send exiting 1, each as one line; Task 3 (#111) proves it end to end, the enqueuer filling `scan-nightly` in Azurite and RepoScanner's scanner scanning each request.
 
-**Architecture:** Task 1: two small types in a new `Enqueuer.Queue` namespace, a record with a static builder and a static writer using `Utf8JsonWriter`, and a test helper, `ScanRequestContract`, holding the scanner's rules. Task 2: `QueueClients` builds the Azure `QueueClient` from Issue 1's `QueueOptions`; `ScanRequestSender` sends one request and turns Azure's failures into two exceptions `Program` logs as one line each; `EnqueueOrchestrator` sends the chosen repositories one at a time and stops at the first failure. Tests use a hand-written `FakeQueueClient`, so `dotnet test` never reaches Azurite.
+**Architecture:** Task 1: two small types in a new `Enqueuer.Queue` namespace, a record with a static builder and a static writer using `Utf8JsonWriter`, and a test helper, `ScanRequestContract`, holding the scanner's rules. Task 2: `QueueClients` builds the Azure `QueueClient` from Issue 1's `QueueOptions`; `ScanRequestSender` sends one request and turns Azure's failures into two exceptions `Program` logs as one line each; `EnqueueOrchestrator` sends the chosen repositories one at a time and stops at the first failure. Tests use a hand-written `FakeQueueClient`, so `dotnet test` never reaches Azurite. Task 3 adds no code: it runs both apps by hand against Azurite and SQL Server Express, records what each step printed for the pull request, and documents it in the README.
 
-**Tech Stack:** .NET 10, `System.Text.Json`, `Azure.Storage.Queues` 12.27.1, `Azure.Identity` 1.21.0, NUnit 4, coverlet.msbuild; Azurite 3.37.0 and the `az` CLI 2.87.0 for the manual checks and the board.
+**Tech Stack:** .NET 10, `System.Text.Json`, `Azure.Storage.Queues` 12.27.1, `Azure.Identity` 1.21.0, NUnit 4, coverlet.msbuild; Azurite 3.37.0, the `az` CLI 2.87.0, SQL Server Express (`.\SQLEXPRESS`) with `sqlcmd`, and RepoScanner's scanner for the manual checks.
 
 **Spec:** [docs/design/2026-10-08-scan-request-sending.md](../../design/2026-10-08-scan-request-sending.md), committed as `40d0f9e` and amended in `6efcc7d` (#81). Read its sections The message, Sending, When a send fails, The orchestrator, Local setup, README and Testing before starting; this plan argues from it.
 
-**Scope:** #109 (Task 1, done in `5fc67b8`) and #110 (Task 2). #111 is added to this plan when it is planned.
+**Scope:** #109 (Task 1, done in `5fc67b8`), #110 (Task 2, done in `69d7d51`) and #111 (Task 3). After Task 3, the whole branch gets one fresh review, then superpowers:finishing-a-development-branch.
 
 ## Global Constraints
 
 - Branch: `feature/81-scan-request-sending` (already created from `develop`, with the design committed).
 - **Commits:** one per board task, only after the user has reviewed that task's diff. The message starts `This commit` and ends with the task number, such as `#110`. It never mentions Claude, Opus or any AI tool: no `Co-Authored-By` line. Push and open a pull request only when the user asks.
-- **Board:** set the task to Doing when it starts and to Done when its commit is made: `az boards work-item update --org https://dev.azure.com/Blacklight-Internal --id <109|110> --state <Doing|Done>`.
+- **Board:** set the task to Doing when it starts and to Done when its commit is made: `az boards work-item update --org https://dev.azure.com/Blacklight-Internal --id <109|110|111> --state <Doing|Done>`.
 - **Exact values:** the example's `correlationId` is `5b1c6f3e-8a2d-4e7f-9c1a-2d3e4f5a6b7c` and `repositoryId` `0f8fad5b-d9cb-469f-a165-70867728950e`; `schemaVersion` is `1`; the field names, in this order, are `schemaVersion`, `correlationId`, `repositoryId`, `projectName`, `repositoryName`, `defaultBranch`.
 - **Namespaces:** product code in `Enqueuer.Queue` (`src/Enqueuer/Queue/`); tests in `Enqueuer.Tests.Queue` (`tests/Enqueuer.Tests/Queue/`), and `RepositoryRoot` in `Enqueuer.Tests`.
 - **Code conventions (RepoScanner ADR-021, as in Issues 1 and 2):** classes `sealed` or `static`; explicit types, no `var`; block bodies, no expression bodies; `using (...) { }` blocks; `ImplicitUsings` is off, so every file lists its usings; a comment giving the reason for each non-obvious line, citing the design by decision number. Tests: NUnit, `Method_Condition_Result` names, `Assert.EnterMultipleScope()` for several asserts. NUnit.Analyzers runs with warnings as errors, so never assert on a `const`.
@@ -44,6 +44,14 @@ Inputs the spec implies but does not test by name, most likely to bite first. Ea
 5. `Enqueuer:Queue:ServiceUri` with a trailing `/`: the client still points at `<account>/scan-nightly`, not at an empty queue name.
 
 The message body being plain text, not Base64 (decision 2), cannot be seen through `FakeQueueClient`: it is checked in Task 2's manual checks, by peeking at the queue.
+
+**Task 3 (#111):** each is a check in Task 3's steps.
+
+1. A repository name with a space, `Power Platform ALM`: the first real request with one goes through the scanner's clone, so its scan run must be as good as the others'.
+2. The real Azure DevOps repository IDs: until now the scanner's `Repositories` rows came from `enqueue-local.ps1`'s made-up IDs. Each row must carry the ID the enqueuer sent, so a later rename keeps the same row.
+3. Messages already on `scan-nightly` before the run, which the scanner would scan too and blur the result: the queue is looked at first, and anything there that is not this run's is the user's to decide about.
+4. A scan that fails, such as a clone that times out: it is recorded as a `Failed` scan run, its message stays and nothing is poisoned. Whether the fault is the enqueuer's message or the scanner's is found with superpowers:systematic-debugging before going on.
+5. Nightly or on demand: every scan run must be `Nightly`, because the scanner takes that from the queue it reads (RepoScanner Issue 7 design, decision 5), never from the message.
 
 ---
 
@@ -455,3 +463,107 @@ Stop for the user's review of the diff. Once approved:
 git add Directory.Packages.props src/Enqueuer tests/Enqueuer.Tests README.md
 git commit -m "This commit sends one scan request per chosen repository to the queue: QueueClients builds the client from Enqueuer:Queue, with Azurite's connection string locally and DefaultAzureCredential in Azure, sending plain text; the orchestrator sends each repository's request with a new correlation ID through ScanRequestSender, one at a time in the order listed, logging a Queued line with its correlation ID and then how many were sent; a missing queue exits 2 with one line starting 'Queue missing', and a send still failing after the storage SDK's retries stops the run and exits 1 with one line giving Azure's status and error code, never the SDK's own message; and the README gains Azurite, the queue and the new lines #110"
 ```
+
+---
+
+### Task 3: End to end with the scanner (#111)
+
+**Files:**
+- Modify: `README.md` (#111)
+- Modify: `docs/design/2026-10-08-scan-request-sending.md` (#81, its own commit)
+- Create: `.superpowers/sdd/2026-10-08-scan-request-sending/e2e-results.md`, the record for the pull request (git-ignored workspace, not committed)
+
+No code changes: this task runs the two apps and records what they print. RepoScanner is only run, never changed.
+
+**Interfaces:**
+- Consumes: the enqueuer of Task 2 (`dotnet run --project src/Enqueuer`), its `Queued` and `Sent` lines; RepoScanner's scanner (`dotnet run --project ..\RepoScanner\src\RepoScanner.Scanner`), its line `Stopped taking messages from {QueueName}: {Reason}. {ScannedCount} scanned, {FailedCount} failed, {SkippedCount} skipped, {PoisonedCount} poisoned`; RepoScanner's database `RepoScanner` on `.\SQLEXPRESS`, tables `ScanRuns` (`CorrelationId`, `Status`, `TriggerType`, `RepositoryId`) and `Repositories` (`Id`, `AzureDevOpsId`, `ProjectName`, `Name`).
+- Produces: the README section **Scan what it queued**, and `e2e-results.md` for the pull request.
+
+Every command reads a secret from the user's environment into the process for that command only, never printing it, because this session's shell predates the variables (Task 2's ruling): `$env:<name> = [Environment]::GetEnvironmentVariable("<name>", "User")` for `Enqueuer__AzureDevOps__Pat`, `Scanner__AzureDevOps__Pat` and `Scanner__Database__ConnectionString`.
+
+- [ ] **Step 1: Set #111 to Doing**
+
+- [ ] **Step 2: Check what the run needs, changing nothing**
+
+| Check | Expected | If not |
+|---|---|---|
+| Something listens on port 10001 | Azurite. Already running on 2026-10-08 as the user's own process | Ask the user to start it: `azurite --location c:\azurite_data` |
+| `az storage queue list --connection-string "UseDevelopmentStorage=true" --query "[].name" -o tsv` | `scan-nightly` and `scan-nightly-poison` among them | Create them as the README's Run, step 3 |
+| The three user variables above have a value (length only) | All three set | Ask the user |
+| `sqlcmd -S .\SQLEXPRESS -E -C -d RepoScanner -h -1 -W -b -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM ScanRuns"` | A number, exit 0 | Ask the user: RepoScanner's README sets the database up |
+| `git -C ..\RepoScanner status -sb` | On `develop`, with no changes | Ask the user before running another branch's scanner |
+
+- [ ] **Step 3: Look at the queue before emptying it (Review Focus, Task 3, 3)**
+
+Run: `az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true" --query "length(@)" -o tsv` from bash (PowerShell passes `length(@)` badly to `az`).
+Expected: `0`. Anything else is the user's: stop and ask before clearing it.
+
+- [ ] **Step 4: Run the enqueuer**
+
+Run: `dotnet run --project src/Enqueuer`, with `Enqueuer__AzureDevOps__Pat` read in.
+Expected: a `Queued` line for each repository listed to scan (5 for BlacklightInternalsMo on 2026-10-08, none skipped), `Sent 5 scan requests to scan-nightly`, `$LASTEXITCODE` 0. Keep the five correlation IDs.
+
+- [ ] **Step 5: Peek at what was sent**
+
+Run: `az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true" --query "[].content" -o tsv`
+Expected: 5 lines of plain JSON starting `{"schemaVersion":1,`, each `correlationId` one of Step 4's. Keep each `repositoryId`.
+
+- [ ] **Step 6: Run the scanner**
+
+Run: `dotnet run --project ..\RepoScanner\src\RepoScanner.Scanner`, with `Scanner__AzureDevOps__Pat` and `Scanner__Database__ConnectionString` read in. It uses its own `Development` settings: `scan-nightly` in Azurite, BlacklightInternalsMo. Save the whole output to the workspace; it clones and scans five repositories, so allow up to 15 minutes.
+Expected: for each request a `Message ... for Kudos Wall/<name>, correlation <id>, attempt 1` line with one of Step 4's IDs, a `Cloned ...` line, and finally `Stopped taking messages from scan-nightly: queue empty. 5 scanned, 0 failed, 0 skipped, 0 poisoned`; `$LASTEXITCODE` 0. A `Failed` scan or a poisoned message is Review Focus, Task 3, 4: debug it before going on, and change nothing in RepoScanner without asking.
+
+- [ ] **Step 7: The queues afterwards**
+
+Run: the Step 3 count on `scan-nightly` and on `scan-nightly-poison`.
+Expected: `0` on both: every request was taken, scanned and deleted, and none was poisoned.
+
+- [ ] **Step 8: Each correlation ID's scan run (criterion 1; Review Focus, Task 3, 1, 2 and 5)**
+
+Run, with Step 4's five IDs in the `IN` list:
+
+```
+sqlcmd -S .\SQLEXPRESS -E -C -d RepoScanner -h -1 -W -s "|" -Q "SET NOCOUNT ON; SELECT s.CorrelationId, r.ProjectName, r.Name, r.AzureDevOpsId, s.TriggerType, s.Status FROM ScanRuns s JOIN Repositories r ON r.Id = s.RepositoryId WHERE s.CorrelationId IN ('<id1>', '<id2>', '<id3>', '<id4>', '<id5>') ORDER BY s.Id"
+```
+
+Expected: exactly 5 rows, one per ID, in the order sent; `TriggerType` `Nightly` on every row; `Status` `Completed` or `PartiallyCompleted` on every row, `Power Platform ALM`'s included; each `AzureDevOpsId` the `repositoryId` Step 5 showed for that repository.
+
+- [ ] **Step 9: The two failure checks**
+
+The design's End to end steps 6 and 7, a missing queue and an unreachable one, were run in Task 2, Step 12, runs 4 and 5, and their lines are in the README. They are not run again: run 5 needed Azurite stopped, and it is the user's process. Their lines go into the results as recorded in the ledger.
+
+- [ ] **Step 10: Write the results for the pull request**
+
+`e2e-results.md` in the workspace, under a heading `End to end, 2026-10-08 (#111)`: for each of Steps 3 to 9, the command and what it printed, with the scanner's log cut to its `Message`, `Cloned` and `Stopped taking messages` lines. No secret appears in it: check that none of the three variables' values is in the file before saving.
+
+- [ ] **Step 11: README**
+
+A section **Scan what it queued**, after **What it logs**: how to see the scanner take this run's requests, in five numbered steps (Steps 3 to 6 and 8, each its command and one line on what to expect), pointing at RepoScanner's README for the scanner's own one-off setup, with Step 8's query and two of its real rows as the example. The design's README section asks for it (decision 19).
+
+- [ ] **Step 12: The design, under #81**
+
+`docs/design/2026-10-08-scan-request-sending.md`, each change marked *after #110's final review* or *after #111*:
+- **When a send fails**, the third row: a network error or timeout comes as an `AggregateException` when several tries failed, or bare when only the last did (a `RequestFailedException` with status 0, an `IOException`, or the SDK's own timeout as a cancellation the run did not ask for); a cancellation of the run itself goes through unchanged, even part way through the retries.
+- **End to end**: step 7 says about 40 seconds, not 25; steps 6 and 7 were run in #110.
+- **Known limitations**: a misspelt queue name in Azure may answer `403`, not `404`, because `id-scanner`'s role covers `scan-nightly` only, so exit 2 may hold only locally. For Issue 6 to check.
+
+```bash
+git add docs/design/2026-10-08-scan-request-sending.md
+git commit -m "This commit brings Issue 3's design up to date after #110 and #111: a network failure after the retries may come bare when only the last try failed, and a stopped run is never a failed send; the unreachable-queue check took about 40 seconds and was run in #110; and a misspelt queue in Azure may answer 403, not 404, which Issue 6 is to check #81"
+```
+
+- [ ] **Step 13: Build and test**
+
+Run: `dotnet build Enqueuer.sln` then `dotnet test Enqueuer.sln --tl:off`
+Expected: 0 warnings; 167 tests pass, as after Task 2; nothing in the code changed.
+
+- [ ] **Step 14: Review, commit, set #111 to Done**
+
+Stop for the user's review of the README and `e2e-results.md`. Once approved:
+
+```bash
+git add README.md
+git commit -m "This commit records the enqueuer and the scanner working together locally: the README gains how to see the scanner take a run's requests from scan-nightly in Azurite and find each one's scan run by its correlation ID, with real rows from 2026-10-08, when all five requests BlacklightInternalsMo listed were scanned as Nightly runs under their real Azure DevOps IDs #111"
+```
+
+The commit message's last part is written from what Step 8 actually showed.
