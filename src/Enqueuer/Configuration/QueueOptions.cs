@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using Azure.Storage.Queues;
 
 namespace Enqueuer.Configuration
 {
@@ -40,6 +41,16 @@ namespace Enqueuer.Configuration
                     new[] { nameof(ConnectionString), nameof(ServiceUri) });
             }
 
+            // Issue 3 is the first to read the connection string, so one the storage SDK cannot read is a settings error
+            // too, not a stack trace when the queue client is built. Reported without its value, which may hold an
+            // account key (final review of #110, finding 5).
+            if (hasConnectionString && !IsStorageConnectionString(ConnectionString!))
+            {
+                yield return new ValidationResult(
+                    "Enqueuer:Queue:ConnectionString is not a storage connection string, such as UseDevelopmentStorage=true.",
+                    new[] { nameof(ConnectionString) });
+            }
+
             // DefaultAzureCredential sends its token only over https
             if (hasServiceUri
                 && !(Uri.TryCreate(ServiceUri, UriKind.Absolute, out Uri? serviceUri) && serviceUri.Scheme == Uri.UriSchemeHttps))
@@ -47,6 +58,20 @@ namespace Enqueuer.Configuration
                 yield return new ValidationResult(
                     "Enqueuer:Queue:ServiceUri must be an absolute https URL, such as https://<account>.queue.core.windows.net.",
                     new[] { nameof(ServiceUri) });
+            }
+        }
+
+        // The storage SDK's own reading of a connection string, which makes no network call
+        private static bool IsStorageConnectionString(string connectionString)
+        {
+            try
+            {
+                _ = new QueueServiceClient(connectionString);
+                return true;
+            }
+            catch (FormatException)
+            {
+                return false;
             }
         }
     }

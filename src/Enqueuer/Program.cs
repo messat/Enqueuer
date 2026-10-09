@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Azure.Storage.Queues;
 using Enqueuer.AzureDevOps;
 using Enqueuer.Configuration;
+using Enqueuer.Queue;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -85,6 +87,19 @@ namespace Enqueuer
                 Log.Fatal("Azure DevOps could not list the repositories, enqueuer stopped: {Problem}", exception.Message);
                 return ExitCodes.Failure;
             }
+            catch (ScanQueueNotFoundException exception)
+            {
+                // Fixed by creating the queue or correcting its name, like any setting (Issue 3 design, decision 10). The
+                // scanner logs the same first words.
+                Log.Fatal("Queue missing, enqueuer stopped: {Problem}", exception.Message);
+                return ExitCodes.InvalidConfiguration;
+            }
+            catch (ScanQueueUnavailableException exception)
+            {
+                // The queue could not be reached or refused the identity, after the SDK's retries (decisions 12 and 13)
+                Log.Fatal("Scan requests could not be sent, enqueuer stopped: {Problem}", exception.Message);
+                return ExitCodes.Failure;
+            }
             catch (Exception exception)
             {
                 // Anything else is unexpected: log it with the full exception so it can be diagnosed
@@ -151,6 +166,12 @@ namespace Enqueuer
             // Register the classes the host can create for us. The Azure DevOps client comes with its named HTTP
             // client, headers and retries (Issue 2 design, The call).
             AzureDevOpsRepositoryClient.Register(builder.Services);
+
+            // The queue the scan requests go to: Azurite's connection string locally, the job's managed identity in
+            // Azure (Issue 3 design, decision 8). Building the client makes no network call.
+            builder.Services.AddSingleton<QueueClient>(services => QueueClients.Create(services.GetRequiredService<IOptions<QueueOptions>>().Value));
+            builder.Services.AddSingleton<ScanRequestSender>();
+
             builder.Services.AddSingleton<EnqueueOrchestrator>();
 
             return builder;

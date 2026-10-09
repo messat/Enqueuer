@@ -1,10 +1,16 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Azure;
 using Enqueuer.AzureDevOps;
 using Enqueuer.Configuration;
+using Enqueuer.Queue;
 using Enqueuer.Tests.AzureDevOps;
+using Enqueuer.Tests.Queue;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting.Internal;
 using Microsoft.Extensions.Logging;
@@ -19,9 +25,24 @@ namespace Enqueuer.Tests
     {
         private const string OrganizationUrl = "https://dev.azure.com/BlacklightInternalsMo";
 
+        // The default sample listing skips all three of its repositories. Three to scan, in two projects, and a disabled
+        // one among them (Issue 3 design, Testing).
+        private const string ThreeToScanAndOneDisabled = """
+            {
+              "count": 4,
+              "value": [
+                { "id": "0f8fad5b-d9cb-469f-a165-70867728950e", "name": "victim-repo", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/main" },
+                { "id": "278d5cd2-584d-4b63-824a-2ba458937249", "name": "old-repo", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/main", "isDisabled": true },
+                { "id": "66efb083-777a-4cac-a350-a24b046be6be", "name": "ProblemApp", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/develop" },
+                { "id": "5febef5a-833d-4e14-b9c0-14cb638f91e6", "name": "WebShop", "project": { "name": "Retail" }, "defaultBranch": "refs/heads/main" }
+              ]
+            }
+            """;
+
         private FakeAzureDevOps _azureDevOps = null!;
         private ServiceProvider _services = null!;
         private FakeLogger<EnqueueOrchestrator> _logger = null!;
+        private FakeQueueClient _queue = null!;
         private EnqueueOrchestrator _orchestrator = null!;
 
         [SetUp]
@@ -30,6 +51,7 @@ namespace Enqueuer.Tests
             _azureDevOps = new FakeAzureDevOps();
             _services = _azureDevOps.BuildServices(OrganizationUrl, "your-test-pat-0001");
             _logger = new FakeLogger<EnqueueOrchestrator>();
+            _queue = new FakeQueueClient("scan-test");
             HostingEnvironment environment = new HostingEnvironment { EnvironmentName = "Test" };
             IOptions<QueueOptions> queueOptions = Options.Create(new QueueOptions { Name = "scan-test", ConnectionString = "UseDevelopmentStorage=true" });
 
@@ -38,7 +60,8 @@ namespace Enqueuer.Tests
                 environment,
                 queueOptions,
                 _services.GetRequiredService<IOptions<AzureDevOpsOptions>>(),
-                _services.GetRequiredService<AzureDevOpsRepositoryClient>());
+                _services.GetRequiredService<AzureDevOpsRepositoryClient>(),
+                new ScanRequestSender(_queue));
         }
 
         [TearDown]
@@ -182,15 +205,121 @@ namespace Enqueuer.Tests
             }
         }
 
-        // Sending arrives in Issue 3, which removes this line
+        // Issue 3, criterion 1: one request per repository to scan, in the order listed, and none for a skipped one
         [Test]
-        public async Task RunAsync_UntilIssue3_SaysNothingWasSent()
+        public async Task RunAsync_SendsOneRequestPerRepositoryToScanInListedOrder()
+        {
+            _azureDevOps.Respond(HttpStatusCode.OK, ThreeToScanAndOneDisabled);
+
+            await _orchestrator.RunAsync(CancellationToken.None);
+
+            Assert.That(_queue.Sent.Select(sent => FieldIn(sent.Text, "repositoryName")), Is.EqualTo(new[] { "victim-repo", "ProblemApp", "WebShop" }));
+        }
+
+        // Issue 3, criterion 2: every message the enqueuer builds keeps the contract
+        [Test]
+        public async Task RunAsync_EveryRequestSent_KeepsTheContract()
+        {
+            _azureDevOps.Respond(HttpStatusCode.OK, ThreeToScanAndOneDisabled);
+
+            await _orchestrator.RunAsync(CancellationToken.None);
+
+            Assert.That(_queue.Sent, Has.Count.EqualTo(3));
+            foreach ((string Text, TimeSpan? VisibilityTimeout, TimeSpan? TimeToLive) sent in _queue.Sent)
+            {
+                Assert.That(ScanRequestContract.ProblemsWith(sent.Text), Is.Empty, sent.Text);
+            }
+        }
+
+        // Decision 4: a new correlation ID for each message
+        [Test]
+        public async Task RunAsync_EachRequestSent_HasItsOwnCorrelationId()
+        {
+            _azureDevOps.Respond(HttpStatusCode.OK, ThreeToScanAndOneDisabled);
+
+            await _orchestrator.RunAsync(CancellationToken.None);
+
+            List<Guid> correlationIds = _queue.Sent.Select(sent => new Guid(FieldIn(sent.Text, "correlationId"))).ToList();
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(correlationIds, Has.Count.EqualTo(3));
+                Assert.That(correlationIds, Is.Unique);
+                Assert.That(correlationIds, Has.None.EqualTo(Guid.Empty));
+            }
+        }
+
+        // Decision 15: a Queued line per message, carrying the correlation ID its message carries
+        [Test]
+        public async Task RunAsync_LogsAQueuedLinePerRequestWithItsCorrelationId()
+        {
+            _azureDevOps.Respond(HttpStatusCode.OK, ThreeToScanAndOneDisabled);
+
+            await _orchestrator.RunAsync(CancellationToken.None);
+
+            List<FakeLogRecord> queued = _logger.Collector.GetSnapshot().Where(record => record.GetStructuredStateValue("CorrelationId") != null).ToList();
+            List<string> sentIds = _queue.Sent.Select(sent => FieldIn(sent.Text, "correlationId")).ToList();
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(queued.Select(record => record.GetStructuredStateValue("CorrelationId")), Is.EqualTo(sentIds));
+                Assert.That(queued[0].Message, Is.EqualTo("Queued Kudos Wall/victim-repo with correlation " + sentIds[0]));
+            }
+        }
+
+        [Test]
+        public async Task RunAsync_EndsWithHowManyWereSent()
+        {
+            _azureDevOps.Respond(HttpStatusCode.OK, ThreeToScanAndOneDisabled);
+
+            await _orchestrator.RunAsync(CancellationToken.None);
+
+            IReadOnlyList<FakeLogRecord> records = _logger.Collector.GetSnapshot();
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(records[records.Count - 1].Message, Is.EqualTo("Sent 3 scan requests to scan-test"));
+                Assert.That(records[records.Count - 1].GetStructuredStateValue("SentCount"), Is.EqualTo("3"));
+            }
+        }
+
+        // Decision 12: the first send that still fails stops the run; the requests already sent stay on the queue
+        [Test]
+        public void RunAsync_WhenTheSecondSendFails_StopsBeforeTheThird()
+        {
+            _azureDevOps.Respond(HttpStatusCode.OK, ThreeToScanAndOneDisabled);
+            _queue.FailSend(2, new RequestFailedException(503, "busy", "ServerBusy", null));
+
+            Assert.ThrowsAsync<ScanQueueUnavailableException>(() => _orchestrator.RunAsync(CancellationToken.None));
+
+            IReadOnlyList<FakeLogRecord> records = _logger.Collector.GetSnapshot();
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(_queue.Attempts, Is.EqualTo(2));
+                Assert.That(_queue.Sent.Select(sent => FieldIn(sent.Text, "repositoryName")), Is.EqualTo(new[] { "victim-repo" }));
+                Assert.That(records.Count(record => record.GetStructuredStateValue("CorrelationId") != null), Is.EqualTo(1));
+                Assert.That(records.Any(record => record.GetStructuredStateValue("SentCount") != null), Is.False);
+            }
+        }
+
+        // With nothing to scan, the queue is not touched; replaces Issue 2's "Nothing sent" line
+        [Test]
+        public async Task RunAsync_NothingToScan_SendsNothingAndSaysSentZero()
         {
             await _orchestrator.RunAsync(CancellationToken.None);
 
             IReadOnlyList<FakeLogRecord> records = _logger.Collector.GetSnapshot();
-            Assert.That(records, Is.Not.Empty);
-            Assert.That(records[records.Count - 1].Message, Is.EqualTo("Nothing sent: sending scan requests arrives in Issue 3"));
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(_queue.Attempts, Is.Zero);
+                Assert.That(records[records.Count - 1].Message, Is.EqualTo("Sent 0 scan requests to scan-test"));
+            }
+        }
+
+        // One field of a sent body, read as the scanner reads it
+        private static string FieldIn(string body, string name)
+        {
+            using (JsonDocument document = JsonDocument.Parse(body))
+            {
+                return document.RootElement.GetProperty(name).ToString();
+            }
         }
 
         private FakeLogRecord? FindByProperty(string name)
