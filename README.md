@@ -115,7 +115,7 @@ Needs Docker Desktop, Azurite, the Azure CLI, a network connection to Azure DevO
 10. A container reaches Azurite on `host.docker.internal:10001`.
 11. `scan-nightly` exists and is empty.
 12. A run with a bad queue name exits 2 with one `Invalid configuration` Fatal line, and queues nothing.
-13. A real run exits 0. Every log line is JSON, the summary is `Completed` with `0 not sent`, and the `Queued` lines, the summary's sent count and the messages on the queue agree, by correlation ID. Neither run's output holds the PAT.
+13. A real run exits 0 having sent at least one request. Every log line is JSON, the summary is `Completed` with `0 not sent`, and the `Queued` lines, the summary's sent count and the messages on the queue agree, by correlation ID. Neither run's output holds the PAT.
 
 It leaves check 13's requests on `scan-nightly` for the scanner (see Scan what it queued), so the next run stops at check 11 until the scanner has taken them. On 2026-10-10 all 13 checks passed, queuing BlacklightInternalsMo's 5 repositories.
 

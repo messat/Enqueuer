@@ -397,6 +397,11 @@ if ($summary.EnqueueRunStatus -ne 'Completed' -or [int]$summary.NotSentCount -ne
     Stop-WithFailure $check "the summary says $($summary.EnqueueRunStatus) with $($summary.NotSentCount) not sent"
 }
 $sentCount = [int]$summary.SentCount
+# A run that sent nothing would make every count below agree at 0, and prove nothing about the container reaching the
+# queue, which is what this check is for (Issue 5 design, success criterion 1)
+if ($sentCount -eq 0) {
+    Stop-WithFailure $check "the run sent nothing (see its summary above), so sending to $script:queueName was not proved: check the PAT's owner can see the organisation's projects, and that not every repository was skipped (README: What it logs)"
+}
 
 # The Queued lines, the summary and the queue must agree, and each message must be one the log names, so the
 # correlation ID that joins the two apps' logs survives the container (Issue 5 design, decision 19)
