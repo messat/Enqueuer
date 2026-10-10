@@ -409,21 +409,33 @@ namespace Enqueuer.Tests
             }
         }
 
-        // Decision 3: ToScanCount is always SentCount plus NotSentCount, so one sent and two not sent
+        // Decision 3: ToScanCount is always SentCount plus NotSentCount, so one sent and two not sent. Every property of
+        // decision 6 is checked here, with values that differ from one another, because the Warning branch repeats the
+        // arguments by hand and two of the same type swapped there (ListedCount and ToScanCount, OrganizationUrl and
+        // QueueName) would otherwise pass.
         [Test]
         public void RunAsync_WhenTheSecondSendFails_SummaryCountsOneSentAndTwoNotSent()
         {
             _azureDevOps.Respond(HttpStatusCode.OK, ThreeToScanAndOneDisabled);
             _queue.FailSend(2, new RequestFailedException(503, "busy", "ServerBusy", null));
 
-            Assert.ThrowsAsync<ScanQueueUnavailableException>(() => _orchestrator.RunAsync(CancellationToken.None));
+            ScanQueueUnavailableException? exception = Assert.ThrowsAsync<ScanQueueUnavailableException>(() => _orchestrator.RunAsync(CancellationToken.None));
 
             FakeLogRecord summary = TheSummary();
             using (Assert.EnterMultipleScope())
             {
+                Assert.That(summary.Level, Is.EqualTo(LogLevel.Warning));
                 Assert.That(summary.GetStructuredStateValue("EnqueueRunStatus"), Is.EqualTo("Failed"));
+                Assert.That(summary.GetStructuredStateValue("EnqueueDurationMs"), Is.EqualTo("1500"));
+                Assert.That(summary.GetStructuredStateValue("ListedCount"), Is.EqualTo("4"));
+                Assert.That(summary.GetStructuredStateValue("OrganizationUrl"), Is.EqualTo(OrganizationUrl));
+                Assert.That(summary.GetStructuredStateValue("ToScanCount"), Is.EqualTo("3"));
+                Assert.That(summary.GetStructuredStateValue("SkippedRepositoryCount"), Is.EqualTo("1"));
+                Assert.That(summary.GetStructuredStateValue("SkippedByReason"), Is.EqualTo("[\"[Disabled, 1]\",\"[InMaintenance, 0]\",\"[Empty, 0]\"]"));
                 Assert.That(summary.GetStructuredStateValue("SentCount"), Is.EqualTo("1"));
+                Assert.That(summary.GetStructuredStateValue("QueueName"), Is.EqualTo("scan-test"));
                 Assert.That(summary.GetStructuredStateValue("NotSentCount"), Is.EqualTo("2"));
+                Assert.That(summary.GetStructuredStateValue("ErrorMessage"), Is.EqualTo(exception!.Message));
             }
         }
 
@@ -437,12 +449,17 @@ namespace Enqueuer.Tests
 
             Assert.ThrowsAsync<ScanQueueUnavailableException>(() => _orchestrator.RunAsync(CancellationToken.None));
 
-            Assert.That(TheSummary().GetStructuredStateValue("EnqueueRunStatus"), Is.EqualTo("Failed"));
+            FakeLogRecord summary = TheSummary();
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(summary.Level, Is.EqualTo(LogLevel.Warning));
+                Assert.That(summary.GetStructuredStateValue("EnqueueRunStatus"), Is.EqualTo("Failed"));
+            }
         }
 
-        // Decision 12, the other half: a cancellation the job's token did not cause, here from the HTTP client's own timeout,
-        // reaches the orchestrator as it was thrown and is still Failed. The send's timeout above cannot show this, since
-        // the sender turns it into ScanQueueUnavailableException first.
+        // Decision 12, the other half: a cancellation the job's token did not cause reaches the orchestrator as it was
+        // thrown and is still Failed. The exception here stands for any such cancellation, and the send's timeout above
+        // cannot show this, since the sender turns it into ScanQueueUnavailableException first.
         [Test]
         public void RunAsync_WhenACancellationIsNotTheJobsOwn_SummaryIsFailed()
         {
@@ -493,6 +510,7 @@ namespace Enqueuer.Tests
             using (Assert.EnterMultipleScope())
             {
                 Assert.That(caught, Is.SameAs(bug));
+                Assert.That(summary.Level, Is.EqualTo(LogLevel.Warning));
                 Assert.That(summary.GetStructuredStateValue("EnqueueRunStatus"), Is.EqualTo("Failed"));
                 Assert.That(summary.GetStructuredStateValue("ErrorMessage"), Is.EqualTo("Simulated bug"));
             }
