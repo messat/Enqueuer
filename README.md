@@ -55,6 +55,24 @@ The enqueuer lists the repositories in Azure DevOps, so it needs a network conne
 
 When the PAT is renewed, update both variables. The PAT never goes in an appsettings file.
 
+## Run in a container
+
+In Azure the enqueuer runs from an image, as the scanner does. The image is built in two stages: the .NET 10 SDK compiles and publishes the app, and only the published app is copied into the .NET 10 runtime image, with no SDK and no git, as the enqueuer never clones. It runs as the image's own non-root user, `app` (1654), in the `Production` environment: `appsettings.Development.json` is left out of the published app, so every setting comes from environment variables, as in Azure, and the log is one JSON object per line (ENQ-ADR-002). The design is in [docs/design/2026-10-10-containerisation.md](docs/design/2026-10-10-containerisation.md).
+
+Needs Docker Desktop, using Linux containers. Build it from the repository root:
+
+```
+docker build -t enqueuer:v1 .
+```
+
+Then run it with its settings from `.env`:
+
+```
+docker run --rm --env-file .env enqueuer:v1
+```
+
+The exit code is the enqueuer's (see Exit codes). The tag is `v1`, set by hand: this release has no pipeline to tag images with a build ID, and the image is never pushed to a registry (RepoScanner ADR-029; RepoScanner ADR-005, amended 2026-10-04). No image here is tagged `latest`.
+
 ## What it logs
 
 The enqueuer logs one line per skipped repository, with its reason, then one `Queued` line per scan request sent, with its correlation ID, and ends the run with one summary line saying how it went. A repository is skipped when it is disabled, in maintenance, or empty (no default branch); forks are queued like any other.
