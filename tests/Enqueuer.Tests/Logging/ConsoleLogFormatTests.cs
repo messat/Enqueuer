@@ -19,6 +19,9 @@ namespace Enqueuer.Tests.Logging
         // .NET settings usually ignore case, so json and TEXT are taken as Json and Text
         [TestCase("json", "Development", true)]
         [TestCase("TEXT", "Production", false)]
+        // Empty counts as not set (LoggingOptions accepts it), so the environment's default
+        [TestCase("", "Production", true)]
+        [TestCase("", "Development", false)]
         // LoggingOptions rejects any other value (exit 2); until then, the environment's default
         [TestCase("Xml", "Production", true)]
         [TestCase("Xml", "Development", false)]

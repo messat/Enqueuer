@@ -707,17 +707,23 @@ namespace Enqueuer.Tests
             Assert.That(exitCode, Is.EqualTo(2));
         }
 
-        // Issue 1 acceptance criterion: ... with one line, and no stack trace
+        // Issue 1 acceptance criterion: ... with one line, and no stack trace. Every BadSettings case is a settings error,
+        // so each ends in exit 2, the wrong Format included (Issue 4 design, decision 4).
         [TestCaseSource(nameof(BadSettings))]
         public async Task Main_WithBadSetting_WritesOneLineWithoutStackTrace(string[] args, string expected)
         {
-            string output = await CaptureConsoleAsync(() => Program.Main(args));
+            int exitCode = -1;
+            string output = await CaptureConsoleAsync(async () => exitCode = await Program.Main(args));
 
             string[] lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             Assert.That(lines, Has.Length.EqualTo(1), output);
-            Assert.That(lines[0], Does.Contain("Invalid configuration"));
-            Assert.That(lines[0], Does.Contain(expected));
-            Assert.That(output, Does.Not.Contain("   at "), "A configuration error should not print a stack trace");
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(exitCode, Is.EqualTo(2));
+                Assert.That(lines[0], Does.Contain("Invalid configuration"));
+                Assert.That(lines[0], Does.Contain(expected));
+                Assert.That(output, Does.Not.Contain("   at "), "A configuration error should not print a stack trace");
+            }
         }
 
         [Test]

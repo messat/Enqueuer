@@ -35,6 +35,18 @@ namespace Enqueuer.Tests.Configuration
             Assert.That(result.Succeeded, Is.True, result.FailureMessage);
         }
 
+        // Empty is the same as not set (the attribute skips an empty value), so ConsoleLogFormat chooses by environment
+        // (design, Testing: empty, Text and Json pass)
+        [Test]
+        public void Validate_WithFormatEmpty_Succeeds()
+        {
+            LoggingOptions options = new LoggingOptions { Format = string.Empty };
+
+            ValidateOptionsResult result = _validator.Validate(null, options);
+
+            Assert.That(result.Succeeded, Is.True, result.FailureMessage);
+        }
+
         [TestCase("Xml")]
         [TestCase("Jsonl")]
         public void Validate_WithAnyOtherFormat_FailsNamingTheSetting(string format)
