@@ -182,7 +182,7 @@ ContainerAppConsoleLogs
 | order by Time asc
 ```
 
-**Enqueue runs that did not complete, in the last week:**
+**Enqueue runs that started but did not complete, in the last week:**
 
 ```kusto
 ContainerAppConsoleLogs
@@ -192,9 +192,21 @@ ContainerAppConsoleLogs
 | project TimeGenerated, Status = tostring(e.EnqueueRunStatus), Sent = toint(e.SentCount), NotSent = toint(e.NotSentCount), Error = tostring(e.ErrorMessage)
 ```
 
-**Nights that queued nothing:** the same, with `where tostring(e.EnqueueRunStatus) == "Completed" and toint(e.SentCount) == 0` (decision 8).
+**Nights that queued nothing, in the last week** (decision 8):
+
+```kusto
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(7d)
+| extend e = parse_json(Log)
+| where tostring(e.EnqueueRunStatus) == "Completed" and toint(e.SentCount) == 0
+| project TimeGenerated, Listed = toint(e.ListedCount), ToQueue = toint(e.ToScanCount), Skipped = toint(e.SkippedRepositoryCount)
+```
 
 The scanner's rejected-PAT alert search (`@l` Fatal and `@m` starting `Azure DevOps refused the token`) already matches the enqueuer's line once it is JSON, as Issue 2, decision 7 intended. A test pins both.
+
+A run stopped by the start-up settings check never starts, so it has no summary and the search for runs that started but did not complete cannot find it: it logs only its `Fatal` line, whose `@m` starts `Invalid configuration`, so look for that too.
+
+*After the final review, 2026-10-10: the third search was given as "the same, with where ...", which added to the second search's `!= "Completed"` would never return a row, so it is written out in full. The second search was named "did not complete" and missed a run stopped at start-up (for example an empty PAT from a broken Key Vault reference: exit 2, no summary), so it is renamed and the last sentence above is new. The README's Logs section has the same changes.*
 
 ## ENQ-ADR-002 (#112)
 
@@ -246,6 +258,6 @@ One task at a time, stopping after each for review, then a commit whose message 
 
 - On a failure the summary is the second-last line, with `Program`'s Fatal line after it (decision 5).
 - The Kusto searches have not been run against Log Analytics. The local filter shows the property names match, not that Container Apps keeps each line whole in `Log`. For Issue 6 to check.
-- A run with wrong settings has no summary line (decision 2).
+- A run stopped by the start-up settings check (`Invalid configuration`, exit 2) has no summary line (decision 2). *After the final review, 2026-10-10: this said "a run with wrong settings", but a wrong queue name or PAT passes that check and does have a summary, as the README's examples show.*
 - When the listing fails, the summary says `0 listed`: read it with the status and `ErrorMessage`.
 - Raw JSON is harder to read than text, which is why Development keeps text.
