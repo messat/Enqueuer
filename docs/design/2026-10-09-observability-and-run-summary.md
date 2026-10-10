@@ -131,10 +131,12 @@ Enqueue run {EnqueueRunStatus} in {EnqueueDurationMs} ms: {ListedCount} listed i
 on one line, Information when `Completed`. When `Failed` or `Stopped`, the same template at Warning with `. Error: {ErrorMessage}` added, so the same properties are on both. As text:
 
 ```
-[02:00:03 INF] Enqueuer.EnqueueOrchestrator: Enqueue run Completed in 1840 ms: 5 listed in https://dev.azure.com/BlacklightInternalsMo, 5 to queue, 0 skipped {"Disabled":0,"InMaintenance":0,"Empty":0}, 5 sent to scan-nightly, 0 not sent
-[02:00:41 WRN] Enqueuer.EnqueueOrchestrator: Enqueue run Failed in 39210 ms: 40 listed in https://dev.azure.com/BlacklightInternalsMo, 39 to queue, 1 skipped {"Disabled":1,"InMaintenance":0,"Empty":0}, 20 sent to scan-nightly, 19 not sent. Error: ...
+[02:00:03 INF] Enqueuer.EnqueueOrchestrator: Enqueue run Completed in 1840 ms: 5 listed in https://dev.azure.com/BlacklightInternalsMo, 5 to queue, 0 skipped {"Disabled": 0, "InMaintenance": 0, "Empty": 0}, 5 sent to scan-nightly, 0 not sent
+[02:00:41 WRN] Enqueuer.EnqueueOrchestrator: Enqueue run Failed in 39210 ms: 40 listed in https://dev.azure.com/BlacklightInternalsMo, 39 to queue, 1 skipped {"Disabled": 1, "InMaintenance": 0, "Empty": 0}, 20 sent to scan-nightly, 19 not sent. Error: ...
 [02:00:41 FTL] Enqueuer.Program: Scan requests could not be sent, enqueuer stopped: ...
 ```
+
+*After #121, 2026-10-10: the examples above had the dictionary written compactly. The console writes it with a space after each colon and comma, as shown now, because its output template ends `{Message:lj}`, which renders values as JSON. In the JSON line, `@m` writes it a third way, as a list of pairs, `[("Disabled": 0), ("InMaintenance": 0), ("Empty": 0)]`, while the `SkippedByReason` property stays the compact object of decision 14. All three were read from real runs on 2026-10-10.*
 
 How `RunAsync` keeps its counts:
 
@@ -150,7 +152,7 @@ When the listing fails, every count is 0: `0 listed` then means nothing was list
 These steps extend README **Scan what it queued**, and are run by hand once #113 is done. What each printed goes in the pull request. They need what #111 needed: Azurite with both queues, the Azure CLI, SQL Server Express with RepoScanner's database, and both PAT variables.
 
 1. Look at the queue first, as #111 did: `az storage message peek --queue-name scan-nightly --num-messages 32 --connection-string "UseDevelopmentStorage=true"`. Expected: empty.
-2. Build both apps first (`dotnet build`), so `dotnet run --no-build` prints only the app's lines.
+2. Build both apps first (`dotnet build`), so `dotnet run --no-build` does not build again. *After #121, 2026-10-10: it still prints its own `Using launch settings from ...` line first, which is not JSON, so it prints more than the app's lines. Step 5's `Where-Object { $_.StartsWith('{') }` skips it.*
 3. Run the enqueuer writing JSON, keeping its output: `dotnet run --no-build --project src/Enqueuer -- --Enqueuer:Logging:Format Json | Tee-Object -FilePath $env:TEMP\enqueuer.log`. Expected: every line JSON, a `Queued` line per repository, the summary `Completed`, and `$LASTEXITCODE` 0.
 4. In RepoScanner, run the scanner the same way: `dotnet run --no-build --project src/RepoScanner.Scanner -- --Scanner:Logging:Format Json | Tee-Object -FilePath $env:TEMP\scanner.log`.
 5. Find one correlation ID from step 3 in both:
@@ -163,6 +165,8 @@ These steps extend README **Scan what it queued**, and are run by hand once #113
 6. A failed run as JSON: `dotnet run --no-build --project src/Enqueuer -- --Enqueuer:Logging:Format Json --Enqueuer:Queue:Name scan-missing-zz9q1`. Expected: the summary at `"@l":"Warning"`, `Failed`, `0 sent`, with `NotSentCount` the number to queue; then the Fatal line starting `Queue missing`; and `$LASTEXITCODE` 2.
 
 Each line is piped through `ConvertFrom-Json` on its own, so each is read as one JSON document whichever PowerShell runs it. Anything that does not hold when #121 runs is changed here and in the README to what was run, as in #111.
+
+*After #121, 2026-10-10: steps 1 to 6 were run. At step 1 the queue was not empty: `scan-nightly` held 15 requests and `scan-nightly-poison` 1 message, left by earlier runs and not this run's, so the run waited until the user had emptied both. The scanner was run from the user's in-progress #76 checkout, as it was, so its last line has one count the develop scanner does not write yet, `0 already done`; it skipped nothing. The enqueuer's summary was `Completed`, 5 sent, 0 not sent, exit code 0. The scanner scanned all 5 in 26 seconds, and step 5's filter found for each ID 1 enqueuer line and between 13 and 27 scanner lines (28 in all for the first, with its `Message`, `Cloned` and `Scan run ... Completed` lines), so criterion 2 holds for every request, not only the first. The README's sqlcmd query found the first two scan runs by those IDs. Step 6 gave the summary at `Warning`, `Failed`, `0 sent`, `5 not sent`, then the `Queue missing` Fatal line, and exit code 2. The two corrections to step 2 and to the summary's examples are marked above.*
 
 ## Searches
 
