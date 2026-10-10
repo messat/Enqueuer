@@ -59,7 +59,7 @@ When the PAT is renewed, update both variables. The PAT never goes in an appsett
 
 The enqueuer logs one line per skipped repository, with its reason, then one `Queued` line per scan request sent, with its correlation ID, and ends the run with one summary line saying how it went. A repository is skipped when it is disabled, in maintenance, or empty (no default branch); forks are queued like any other.
 
-A run that gets past start-up always ends with the summary, however it ended, and it is the last line of the run itself. A run whose settings are wrong stops before the run starts and has none. The summary is `Information` when the run `Completed`, and a warning ending `Error: ...` when it `Failed` or was `Stopped`; on a failure `Program`'s one `FTL` line comes after it. It gives the run's duration, how many repositories were listed and where, how many are to queue and how many were skipped, by reason, and how many were sent to the queue and how many were not. For example, a run against a misspelt queue name on 2026-10-10, with BlacklightInternalsMo's 5 repositories listed and Azurite running, but none sent:
+A run that gets past start-up always ends with the summary, however it ended, and it is the last line of the run itself. A run stopped by the start-up settings check (a setting missing or invalid: one `FTL` line starting `Invalid configuration`, exit code 2) stops before the run starts and has none. A wrong queue name or PAT passes that check and is found during the run, so it has a summary, as the example below shows. The summary is `Information` when the run `Completed`, and a warning ending `Error: ...` when it `Failed` or was `Stopped`; on a failure `Program`'s one `FTL` line comes after it. It gives the run's duration, how many repositories were listed and where, how many are to queue and how many were skipped, by reason, and how many were sent to the queue and how many were not. For example, a run against a misspelt queue name on 2026-10-10, with BlacklightInternalsMo's 5 repositories listed and Azurite running, but none sent:
 
 ```
 [17:25:57 INF] Enqueuer.EnqueueOrchestrator: Enqueuer starting in Development for queue scan-missing-zz9q1
@@ -176,7 +176,7 @@ ContainerAppConsoleLogs
 | order by Time asc
 ```
 
-Enqueue runs that did not complete, in the last week:
+Enqueue runs that started but did not complete, in the last week:
 
 ```kusto
 ContainerAppConsoleLogs
@@ -186,7 +186,17 @@ ContainerAppConsoleLogs
 | project TimeGenerated, Status = tostring(e.EnqueueRunStatus), Sent = toint(e.SentCount), NotSent = toint(e.NotSentCount), Error = tostring(e.ErrorMessage)
 ```
 
-Nights that queued nothing: the same, with `where tostring(e.EnqueueRunStatus) == "Completed" and toint(e.SentCount) == 0`. A completed run that sent nothing is still `Completed` at `Information`, so no warning marks it: this search finds it.
+Nights that queued nothing, in the last week:
+
+```kusto
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(7d)
+| extend e = parse_json(Log)
+| where tostring(e.EnqueueRunStatus) == "Completed" and toint(e.SentCount) == 0
+| project TimeGenerated, Listed = toint(e.ListedCount), ToQueue = toint(e.ToScanCount), Skipped = toint(e.SkippedRepositoryCount)
+```
+
+A completed run that sent nothing is still `Completed` at `Information`, so no warning marks it: this search finds it.
 
 RepoScanner's rejected-PAT alert search also matches the enqueuer's line, since both write a `Fatal` line starting `Azure DevOps refused the token` and tests on each side pin it:
 
@@ -196,6 +206,8 @@ ContainerAppConsoleLogs
 | where tostring(e["@l"]) == "Fatal" and tostring(e["@m"]) startswith "Azure DevOps refused the token"
 | project TimeGenerated, ContainerGroupName, Message = tostring(e["@m"])
 ```
+
+A run stopped by the start-up settings check never starts, so it has no summary and the search for runs that started but did not complete cannot find it: it logs only its `Fatal` line, whose `@m` starts `Invalid configuration`, so look for that too.
 
 ## Configuration
 
@@ -220,7 +232,7 @@ As environment variables, `:` becomes `__`, for example `Enqueuer__Queue__Name`.
 | 1 | Azure DevOps refused the PAT, Azure DevOps or the queue could not be reached, a send failed, or something else went wrong |
 | 2 | A setting is missing or invalid, so the enqueuer did not start, or the queue is missing |
 
-A run that fails once it has started logs its summary at `WRN` first (see What it logs), then `Program`'s one `FTL` line, which gives the reason and sets the exit code. The examples below are those `FTL` lines. A run whose settings are wrong has no summary, only its one `FTL` line.
+A run that fails once it has started logs its summary at `WRN` first (see What it logs), then `Program`'s one `FTL` line, which gives the reason and sets the exit code. The examples below are those `FTL` lines. A run stopped by the start-up settings check (`Invalid configuration`, a setting missing or invalid) has no summary, only its one `FTL` line.
 
 A refused PAT, whether wrong, expired or revoked, stops the enqueuer within seconds with its summary, one `FTL` line and exit code 1. The scanner logs the same first words, so one alert covers both. With a wrong PAT on 2026-10-08:
 
@@ -258,6 +270,6 @@ The reason in brackets is repeated once for each try.
 - The enqueuer sends Azure DevOps' repository names unchanged. A name the scanner would refuse, possible only if it was made through the API around Azure DevOps' naming rules, gets that one request moved to `scan-nightly-poison` by the scanner, with its warning.
 - The enqueuer's copy of the scan request is tied to the scanner's only by the contract tests on each side, which read the same example message (ENQ-ADR-001).
 - On a failure the summary comes just before the Fatal line, not after it: the orchestrator logs the summary, then `Program` logs the Fatal line when the exception reaches it.
-- A run whose settings are wrong has no summary. It stops before the run starts, with one Fatal line.
+- A run stopped by the start-up settings check (`Invalid configuration`, exit code 2) has no summary. It stops before the run starts, with one Fatal line.
 - When the listing fails, the summary says `0 listed`. That means nothing was listed, not that Azure DevOps listed nothing, so read it with its status and error.
 - The searches in Logs have not been run against Log Analytics: there is none in this release (RepoScanner ADR-029). The local filter shows the property names match, not that Container Apps keeps each line whole in `Log`. For Issue 6 to check.
