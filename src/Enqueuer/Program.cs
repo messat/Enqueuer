@@ -160,7 +160,7 @@ namespace Enqueuer
                 // warnings and errors are wanted (Issue 2 design, decision 15)
                 .MinimumLevel.Override("System.Net.Http.HttpClient", LogEventLevel.Warning)
                 .MinimumLevel.Override("Polly", LogEventLevel.Warning)
-                // Lets later code add properties (e.g. CorrelationId, Issue 4) to every log line in a scope
+                // Adds the properties pushed to Serilog's LogContext to every line written while they are pushed
                 .Enrich.FromLogContext()
                 .WriteTo, json),
                 // Keep the start-up logger in Log.Logger: the host's logger is disposed with the host,
@@ -195,6 +195,10 @@ namespace Enqueuer
             // Azure (Issue 3 design, decision 8). Building the client makes no network call.
             builder.Services.AddSingleton<QueueClient>(services => QueueClients.Create(services.GetRequiredService<IOptions<QueueOptions>>().Value));
             builder.Services.AddSingleton<ScanRequestSender>();
+
+            // The orchestrator reads the time from this, so its tests can move it by hand and assert the summary's exact
+            // duration (Issue 4 design, decision 11)
+            builder.Services.AddSingleton(TimeProvider.System);
 
             builder.Services.AddSingleton<EnqueueOrchestrator>();
 

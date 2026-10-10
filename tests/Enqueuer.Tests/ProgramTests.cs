@@ -151,8 +151,10 @@ namespace Enqueuer.Tests
                         lines.Any(line => LogLines.Value(line, "EnvironmentName") == "Test" && LogLines.Value(line, "QueueName") == "scan-test"),
                         Is.True,
                         output);
+                    // The counts are on the summary line, the run's last (Issue 4 design, decision 7)
                     Assert.That(
-                        lines.Any(line => LogLines.Value(line, "ListedCount") == "3"
+                        lines.Any(line => LogLines.Value(line, "EnqueueRunStatus") == "Completed"
+                            && LogLines.Value(line, "ListedCount") == "3"
                             && LogLines.Value(line, "OrganizationUrl") == "https://dev.azure.com/BlacklightInternalsMo"),
                         Is.True,
                         output);
@@ -233,7 +235,10 @@ namespace Enqueuer.Tests
                 {
                     Assert.That(exitCode, Is.EqualTo(0));
                     Assert.That(queue.Sent, Has.Count.EqualTo(1));
-                    Assert.That(LogLines.Read(output).Any(line => LogLines.Value(line, "SentCount") == "1"), Is.True, output);
+                    Assert.That(
+                        LogLines.Read(output).Any(line => LogLines.Value(line, "EnqueueRunStatus") == "Completed" && LogLines.Value(line, "SentCount") == "1"),
+                        Is.True,
+                        output);
                 }
             }
         }
@@ -300,6 +305,71 @@ namespace Enqueuer.Tests
                     Assert.That(failures[0].TryGetProperty("@x", out _), Is.False, "a failed send should not print a stack trace");
                     Assert.That(output, Does.Not.Contain("   at "), "a failed send should not print a stack trace");
                     Assert.That(output, Does.Not.Contain("Headers"), "the SDK's own message should not be printed");
+                }
+            }
+        }
+
+        // Issue 4 design, decision 5: the orchestrator logs the summary and rethrows, so on a failure it is the line just
+        // before Program's Fatal line. SkippedByReason is an object in JSON, with every reason in it (decision 14).
+        [Test]
+        public async Task RunAsync_WhenASendFails_TheSummaryComesJustBeforeTheFatalLine()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, OneToScan);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+                queue.FailSend(1, new RequestFailedException(403, "denied", "AuthorizationPermissionMismatch", null));
+
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                IReadOnlyList<JsonElement> lines = LogLines.Read(output);
+                JsonElement last = lines[lines.Count - 1];
+                JsonElement summary = lines[lines.Count - 2];
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(LogLines.Level(last), Is.EqualTo("Fatal"), output);
+                    Assert.That(LogLines.Level(summary), Is.EqualTo("Warning"), output);
+                    Assert.That(LogLines.Value(summary, "EnqueueRunStatus"), Is.EqualTo("Failed"));
+                    Assert.That(LogLines.Value(summary, "SentCount"), Is.EqualTo("0"));
+                    Assert.That(LogLines.Value(summary, "NotSentCount"), Is.EqualTo("1"));
+                    Assert.That(LogLines.Value(summary, "SkippedByReason"), Is.EqualTo("{\"Disabled\":0,\"InMaintenance\":0,\"Empty\":0}"));
+                }
+            }
+        }
+
+        // Issue 4 plan, Review Focus 5: a bug's message may have a line break. The summary still holds it exactly, and
+        // every line is still one JSON object, because JSON writes the break as \n.
+        [Test]
+        public async Task RunAsync_WhenABugsMessageHasALineBreak_EveryLineIsStillOneJsonObject()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, OneToScan);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+                queue.FailSend(1, new InvalidOperationException("first line\nsecond line"));
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                // Read fails the test on any line that is not one JSON object
+                IReadOnlyList<JsonElement> lines = LogLines.Read(output);
+                JsonElement summary = lines.Single(line => LogLines.Value(line, "EnqueueRunStatus") != null);
+                JsonElement last = lines[lines.Count - 1];
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(1));
+                    Assert.That(LogLines.Value(summary, "ErrorMessage"), Is.EqualTo("first line\nsecond line"));
+                    Assert.That(LogLines.Level(last), Is.EqualTo("Fatal"), output);
+                    Assert.That(LogLines.Message(last), Is.EqualTo("Enqueuer failed"));
+                    Assert.That(last.TryGetProperty("@x", out _), Is.True, "a bug keeps its stack trace");
                 }
             }
         }
