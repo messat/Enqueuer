@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Azure;
@@ -116,7 +118,9 @@ namespace Enqueuer.Tests
             new TestCaseData(ArgsWithInvalidQueueName, "Name must be 3 to 63 characters").SetArgDisplayNames("wrong Name"),
             new TestCaseData(ArgsWithMalformedServiceUri, "Enqueuer:Queue:ServiceUri").SetArgDisplayNames("malformed ServiceUri"),
             new TestCaseData(ArgsWithMalformedConnectionString, "Enqueuer:Queue:ConnectionString").SetArgDisplayNames("malformed ConnectionString"),
-            new TestCaseData(ArgsWithoutPat, "Enqueuer__AzureDevOps__Pat").SetArgDisplayNames("missing Pat")
+            new TestCaseData(ArgsWithoutPat, "Enqueuer__AzureDevOps__Pat").SetArgDisplayNames("missing Pat"),
+            // Fails at start-up like the others, so Main never reaches Azure DevOps
+            new TestCaseData(With("--Enqueuer:Logging:Format", "Xml"), "Enqueuer:Logging:Format must be Text or Json").SetArgDisplayNames("wrong Format")
         };
 
         // Main would reach the real Azure DevOps, so a run that gets as far as listing goes through RunAsync with
@@ -139,11 +143,19 @@ namespace Enqueuer.Tests
             {
                 string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
 
+                // The lines are JSON in Test (decision 4), so the values are read as properties, not found in a sentence
+                IReadOnlyList<JsonElement> lines = LogLines.Read(output);
                 using (Assert.EnterMultipleScope())
                 {
-                    Assert.That(output, Does.Contain("Enqueuer starting in"));
-                    Assert.That(output, Does.Contain("scan-test"));
-                    Assert.That(output, Does.Contain("Listed 3 repositories in https://dev.azure.com/BlacklightInternalsMo"));
+                    Assert.That(
+                        lines.Any(line => LogLines.Value(line, "EnvironmentName") == "Test" && LogLines.Value(line, "QueueName") == "scan-test"),
+                        Is.True,
+                        output);
+                    Assert.That(
+                        lines.Any(line => LogLines.Value(line, "ListedCount") == "3"
+                            && LogLines.Value(line, "OrganizationUrl") == "https://dev.azure.com/BlacklightInternalsMo"),
+                        Is.True,
+                        output);
                     Assert.That(azureDevOps.Requests, Has.Count.EqualTo(1));
                 }
             }
@@ -161,12 +173,15 @@ namespace Enqueuer.Tests
                 int exitCode = -1;
                 string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
 
-                string[] failures = FatalLines(output);
+                JsonElement[] failures = FatalLines(output);
                 using (Assert.EnterMultipleScope())
                 {
                     Assert.That(exitCode, Is.EqualTo(1));
                     Assert.That(failures, Has.Length.EqualTo(1), output);
-                    Assert.That(failures[0], Does.Contain("Azure DevOps refused the token, enqueuer stopped: Azure DevOps refused the token in Enqueuer:AzureDevOps:Pat"));
+                    // The scanner's alert search is a Fatal line whose message starts with these words (Issue 4 design, Searches)
+                    Assert.That(LogLines.Message(failures[0]), Does.StartWith("Azure DevOps refused the token, enqueuer stopped: "));
+                    Assert.That(LogLines.Value(failures[0], "Problem"), Does.StartWith("Azure DevOps refused the token in Enqueuer:AzureDevOps:Pat"));
+                    Assert.That(failures[0].TryGetProperty("@x", out _), Is.False, "a refused PAT should not print a stack trace");
                     Assert.That(output, Does.Not.Contain("   at "), "a refused PAT should not print a stack trace");
                 }
             }
@@ -183,12 +198,16 @@ namespace Enqueuer.Tests
                 int exitCode = -1;
                 string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
 
-                string[] failures = FatalLines(output);
+                JsonElement[] failures = FatalLines(output);
                 using (Assert.EnterMultipleScope())
                 {
                     Assert.That(exitCode, Is.EqualTo(1));
                     Assert.That(failures, Has.Length.EqualTo(1), output);
-                    Assert.That(failures[0], Does.Contain("Azure DevOps could not list the repositories, enqueuer stopped: Repositories could not be listed from https://dev.azure.com/BlacklightInternalsMo: Azure DevOps answered 404 (Not Found)."));
+                    Assert.That(LogLines.Message(failures[0]), Does.StartWith("Azure DevOps could not list the repositories, enqueuer stopped: "));
+                    Assert.That(
+                        LogLines.Value(failures[0], "Problem"),
+                        Is.EqualTo("Repositories could not be listed from https://dev.azure.com/BlacklightInternalsMo: Azure DevOps answered 404 (Not Found)."));
+                    Assert.That(failures[0].TryGetProperty("@x", out _), Is.False, "a failed listing should not print a stack trace");
                     Assert.That(output, Does.Not.Contain("   at "), "a failed listing should not print a stack trace");
                 }
             }
@@ -214,7 +233,7 @@ namespace Enqueuer.Tests
                 {
                     Assert.That(exitCode, Is.EqualTo(0));
                     Assert.That(queue.Sent, Has.Count.EqualTo(1));
-                    Assert.That(output, Does.Contain("Sent 1 scan requests to scan-test"));
+                    Assert.That(LogLines.Read(output).Any(line => LogLines.Value(line, "SentCount") == "1"), Is.True, output);
                 }
             }
         }
@@ -236,12 +255,16 @@ namespace Enqueuer.Tests
                     queue.ReplaceQueue(services);
                 }));
 
-                string[] failures = FatalLines(output);
+                JsonElement[] failures = FatalLines(output);
                 using (Assert.EnterMultipleScope())
                 {
                     Assert.That(exitCode, Is.EqualTo(2));
                     Assert.That(failures, Has.Length.EqualTo(1), output);
-                    Assert.That(failures[0], Does.Contain("Queue missing, enqueuer stopped: The queue scan-test does not exist. Create it, or correct Enqueuer:Queue:Name."));
+                    Assert.That(LogLines.Message(failures[0]), Does.StartWith("Queue missing, enqueuer stopped: "));
+                    Assert.That(
+                        LogLines.Value(failures[0], "Problem"),
+                        Is.EqualTo("The queue scan-test does not exist. Create it, or correct Enqueuer:Queue:Name."));
+                    Assert.That(failures[0].TryGetProperty("@x", out _), Is.False, "a missing queue should not print a stack trace");
                     Assert.That(output, Does.Not.Contain("   at "), "a missing queue should not print a stack trace");
                 }
             }
@@ -265,19 +288,25 @@ namespace Enqueuer.Tests
                     queue.ReplaceQueue(services);
                 }));
 
-                string[] failures = FatalLines(output);
+                JsonElement[] failures = FatalLines(output);
                 using (Assert.EnterMultipleScope())
                 {
                     Assert.That(exitCode, Is.EqualTo(1));
                     Assert.That(failures, Has.Length.EqualTo(1), output);
-                    Assert.That(failures[0], Does.Contain("Scan requests could not be sent, enqueuer stopped: The scan request for Kudos Wall/victim-repo could not be sent to scan-test: Azure answered 403 (AuthorizationPermissionMismatch)."));
+                    Assert.That(LogLines.Message(failures[0]), Does.StartWith("Scan requests could not be sent, enqueuer stopped: "));
+                    Assert.That(
+                        LogLines.Value(failures[0], "Problem"),
+                        Is.EqualTo("The scan request for Kudos Wall/victim-repo could not be sent to scan-test: Azure answered 403 (AuthorizationPermissionMismatch)."));
+                    Assert.That(failures[0].TryGetProperty("@x", out _), Is.False, "a failed send should not print a stack trace");
                     Assert.That(output, Does.Not.Contain("   at "), "a failed send should not print a stack trace");
                     Assert.That(output, Does.Not.Contain("Headers"), "the SDK's own message should not be printed");
                 }
             }
         }
 
-        // Issue 2, criterion 4: whatever happens, nothing the enqueuer prints holds the PAT, plain or in Base64
+        // Issue 2, criterion 4: whatever happens, nothing the enqueuer prints holds the PAT, plain or in Base64. Searched
+        // as printed and, string by string, unescaped, so JSON's escaping cannot hide a leaked PAT (Issue 4 plan, Review
+        // Focus 2).
         [TestCase(HttpStatusCode.OK)]
         [TestCase(HttpStatusCode.Unauthorized)]
         [TestCase(HttpStatusCode.NotFound)]
@@ -290,9 +319,154 @@ namespace Enqueuer.Tests
 
                 string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, azureDevOps.ReplaceAzureDevOps));
                 string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(":" + Pat));
-                bool leaked = output.Contains(Pat, StringComparison.Ordinal) || output.Contains(base64, StringComparison.Ordinal);
+                bool leaked = output.Contains(Pat, StringComparison.Ordinal)
+                    || output.Contains(base64, StringComparison.Ordinal)
+                    || LogLines.Read(output).SelectMany(LogLines.Strings)
+                        .Any(text => text.Contains(Pat, StringComparison.Ordinal) || text.Contains(base64, StringComparison.Ordinal));
 
                 Assert.That(leaked, Is.False, "the PAT is in the output");
+            }
+        }
+
+        // Issue 4 design, decision 4: outside Development every line is one JSON object, so Log Analytics can filter on
+        // any property. These runs are in Test, as every ProgramTests run is.
+        [Test]
+        public async Task RunAsync_OutsideDevelopment_WritesEveryLineAsJson()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, OneToScan);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                // Read fails the test on any line that is not one JSON object
+                IReadOnlyList<JsonElement> lines = LogLines.Read(output);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(0));
+                    Assert.That(lines, Has.Count.GreaterThanOrEqualTo(3), output);
+                    Assert.That(lines.All(line => line.TryGetProperty("@t", out _) && line.TryGetProperty("@m", out _)), Is.True, output);
+                }
+            }
+        }
+
+        // Decision 4 and criterion 2: the Queued line carries the three properties the scanner's lines carry, at the top
+        // level, so one search on a correlation ID finds this line too
+        [Test]
+        public async Task RunAsync_QueuedLine_HasTheCorrelationIdAndRepositoryAtTheTopLevel()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, OneToScan);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                JsonElement queued = LogLines.Read(output).Single(line => LogLines.Value(line, "CorrelationId") != null);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(LogLines.Value(queued, "ProjectName"), Is.EqualTo("Kudos Wall"));
+                    Assert.That(LogLines.Value(queued, "RepositoryName"), Is.EqualTo("victim-repo"));
+                    Assert.That(Guid.TryParse(LogLines.Value(queued, "CorrelationId"), out _), Is.True, output);
+                }
+            }
+        }
+
+        // Decision 4: Development keeps the readable text line
+        [Test]
+        public async Task RunAsync_InDevelopment_WritesText()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(With("--environment", "Development"), azureDevOps.ReplaceAzureDevOps));
+
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(NonEmptyLines(output).Any(line => line.StartsWith('{')), Is.False, output);
+                    Assert.That(output, Does.Contain(" INF] Enqueuer.EnqueueOrchestrator: Enqueuer starting in Development"));
+                }
+            }
+        }
+
+        // Decision 4: Enqueuer:Logging:Format overrides the environment, so Text outside Development writes text
+        [Test]
+        public async Task RunAsync_WithFormatTextOutsideDevelopment_WritesText()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(With("--Enqueuer:Logging:Format", "Text"), azureDevOps.ReplaceAzureDevOps));
+
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(NonEmptyLines(output).Any(line => line.StartsWith('{')), Is.False, output);
+                    Assert.That(output, Does.Contain(" INF] Enqueuer.EnqueueOrchestrator: Enqueuer starting in Test"));
+                }
+            }
+        }
+
+        // Issue 4 plan, Review Focus 1: a name a search compares as written must read back exactly, though JSON escapes some characters
+        // and writes the rest as they are. A repository's name is not limited to ASCII.
+        [Test]
+        public async Task RunAsync_NamesThatJsonEscapes_ReadBackExactly()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, """
+                    {
+                      "count": 1,
+                      "value": [
+                        { "id": "0f8fad5b-d9cb-469f-a165-70867728950e", "name": "O'Brien-Ölçek", "project": { "name": "Café & Co" }, "defaultBranch": "refs/heads/main" }
+                      ]
+                    }
+                    """);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                JsonElement queued = LogLines.Read(output).Single(line => LogLines.Value(line, "CorrelationId") != null);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(LogLines.Value(queued, "ProjectName"), Is.EqualTo("Café & Co"));
+                    Assert.That(LogLines.Value(queued, "RepositoryName"), Is.EqualTo("O'Brien-Ölçek"));
+                }
+            }
+        }
+
+        // Issue 4 plan, Review Focus 4: the start-up logger and the host's logger must agree, as the scanner's decision 10 found. In
+        // Development a run whose PAT is refused is text from both: the host's Information lines and the start-up
+        // logger's Fatal line. The JSON half is RunAsync_OutsideDevelopment_WritesEveryLineAsJson and the refused-PAT test.
+        [Test]
+        public async Task RunAsync_InDevelopmentWhenThePatIsRefused_BothLoggersWriteText()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.Unauthorized, "{}");
+
+                int exitCode = -1;
+                string output = await CaptureConsoleAsync(async () => exitCode = await Program.RunAsync(With("--environment", "Development"), azureDevOps.ReplaceAzureDevOps));
+
+                string[] lines = NonEmptyLines(output);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(exitCode, Is.EqualTo(1));
+                    Assert.That(lines.All(line => line.StartsWith('[')), Is.True, output);
+                    Assert.That(lines.Any(line => line.Contains(" INF] ", StringComparison.Ordinal)), Is.True, "the host's logger: " + output);
+                    Assert.That(lines.Any(line => line.Contains(" FTL] ", StringComparison.Ordinal)), Is.True, "the start-up logger: " + output);
+                }
             }
         }
 
@@ -329,6 +503,31 @@ namespace Enqueuer.Tests
             finally
             {
                 Environment.SetEnvironmentVariable("Enqueuer__AzureDevOps__Pat", before);
+            }
+        }
+
+        // Issue 4 plan, Review Focus 3: the start-up logger exists before configuration is read, so it takes the format from the
+        // environment itself. With Enqueuer__Logging__Format=Text its Fatal line is text although the run is in Test.
+        [Test]
+        public async Task Main_WithFormatTextInTheEnvironment_WritesTheStartUpLinesAsText()
+        {
+            string? before = Environment.GetEnvironmentVariable("Enqueuer__Logging__Format");
+            Environment.SetEnvironmentVariable("Enqueuer__Logging__Format", "Text");
+            try
+            {
+                string output = await CaptureConsoleAsync(() => Program.Main(ArgsWithoutQueueName));
+
+                string[] lines = NonEmptyLines(output);
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(lines, Has.Length.EqualTo(1), output);
+                    Assert.That(lines[0], Does.Contain(" FTL] "));
+                    Assert.That(lines[0], Does.Not.StartWith("{"));
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("Enqueuer__Logging__Format", before);
             }
         }
 
@@ -474,12 +673,24 @@ namespace Enqueuer.Tests
             }
         }
 
-        // The lines Serilog wrote at Fatal, the level Program uses for the reason it stopped
-        private static string[] FatalLines(string output)
+        // The JSON lines Serilog wrote at Fatal, the level Program uses for the reason it stopped. CLEF names the level
+        // in @l, and LogLines.Level says Information for a line that has none.
+        private static JsonElement[] FatalLines(string output)
         {
-            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Where(line => line.Contains(" FTL] ", StringComparison.Ordinal))
-                .ToArray();
+            return LogLines.Read(output).Where(line => LogLines.Level(line) == "Fatal").ToArray();
+        }
+
+        // ValidArgs followed by more. A repeated key's last value wins, for the host and for
+        // ConsoleLogFormat.IsJsonBeforeTheHost alike, so this is how a test changes the environment or the format.
+        private static string[] With(params string[] extra)
+        {
+            return ValidArgs.Concat(extra).ToArray();
+        }
+
+        // The lines of text output, without the blank ones
+        private static string[] NonEmptyLines(string output)
+        {
+            return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         }
 
         // Runs the given code with the console redirected, and returns everything it wrote

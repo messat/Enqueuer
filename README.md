@@ -70,6 +70,8 @@ One line per skipped repository with its reason, then the totals. A repository i
 [19:38:53 INF] Enqueuer.EnqueueOrchestrator: Sent 5 scan requests to scan-nightly
 ```
 
+The example is Development's text. Every other environment writes each line as one JSON object: `@t` is the time, `@m` the message and `@l` the level, left out for Information, then every named value as a property of its own, such as `CorrelationId`, so a search can filter on it (ENQ-ADR-002). `dotnet run --project src/Enqueuer -- --Enqueuer:Logging:Format Json` shows it locally.
+
 A skipped repository looks like `Skipped Kudos Wall/ProblemApp: Disabled`. If Azure DevOps lists none at all, a warning says to check what the PAT's owner can see. The PAT is never logged.
 
 ## Scan what it queued
@@ -113,6 +115,7 @@ Settings are read from appsettings files, then environment variables, then the c
 | `Enqueuer:Queue:ServiceUri` | One of these two | | Azure only, with the job's managed identity (RepoScanner ADR-007). An absolute `https` URL, such as `https://<account>.queue.core.windows.net` |
 | `Enqueuer:AzureDevOps:OrganizationUrl` | Yes | `https://dev.azure.com/BlacklightInternalsMo` | An absolute `https` URL with no user name, query string or fragment. The organisation the scanner clones from |
 | `Enqueuer:AzureDevOps:Pat` | Yes | | Locally the user environment variable `Enqueuer__AzureDevOps__Pat` (see Run); in Azure a Key Vault secret reference. Never in an appsettings file. No space, line break or quote mark at either end |
+| `Enqueuer:Logging:Format` | No | (not set) | `Text` or `Json`, in any case. Not set: text in Development, one JSON object per line everywhere else (ENQ-ADR-002). Any other value stops the enqueuer with exit code 2 |
 
 As environment variables, `:` becomes `__`, for example `Enqueuer__Queue__Name`.
 

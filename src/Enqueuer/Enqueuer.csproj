@@ -20,6 +20,8 @@
     <PackageReference Include="Serilog.Extensions.Hosting" />
     <!-- Serilog output to the console (stdout), which Container Apps collects -->
     <PackageReference Include="Serilog.Sinks.Console" />
+    <!-- One JSON object per log line outside Development, for Log Analytics (ENQ-ADR-002) -->
+    <PackageReference Include="Serilog.Formatting.Compact" />
   </ItemGroup>
 
   <!-- Lets the test project call internal members, such as Program.RunAsync -->

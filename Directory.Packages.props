@@ -35,6 +35,9 @@
   <ItemGroup>
     <PackageVersion Include="Serilog.Extensions.Hosting" Version="10.0.0" />
     <PackageVersion Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <!-- RenderedCompactJsonFormatter: one JSON object per line outside Development (Issue 4 design, decision 4; ENQ-ADR-002).
+         Added 2026-10-09 at RepoScanner's version. -->
+    <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
   </ItemGroup>
 
   <!-- Testing -->
