@@ -69,13 +69,26 @@ A run that gets past start-up always ends with the summary, however it ended, an
 
 A completed run's summary is at `INF`, says `Completed`, and ends `N sent to scan-nightly, 0 not sent`, with N the number to queue.
 
-The example is Development's text. Every other environment writes each line as one JSON object: `@t` is the time, `@m` the message and `@l` the level, left out for Information, then every named value as a property of its own, such as `CorrelationId`, so a search can filter on it (ENQ-ADR-002). `dotnet run --project src/Enqueuer -- --Enqueuer:Logging:Format Json` shows it locally.
+The example is Development's text. Every other environment writes each line as one JSON object: `@t` is the time, `@m` the message and `@l` the level, left out for Information, then every named value as a property of its own, such as `CorrelationId`, so a search can filter on it (ENQ-ADR-002). `dotnet run --project src/Enqueuer -- --Enqueuer:Logging:Format Json` shows it locally. A completed run's summary that way, on 2026-10-10 with BlacklightInternalsMo's 5 repositories, shown across several lines (the real line is one):
+
+```json
+{"@t":"2026-10-10T16:48:43.8463178Z",
+ "@m":"Enqueue run Completed in 644 ms: 5 listed in \"https://dev.azure.com/BlacklightInternalsMo\", 5 to queue, 0 skipped [(\"Disabled\": 0), (\"InMaintenance\": 0), (\"Empty\": 0)], 5 sent to \"scan-nightly\", 0 not sent",
+ "@i":"2d117eb5",
+ "EnqueueRunStatus":"Completed","EnqueueDurationMs":644,"ListedCount":5,
+ "OrganizationUrl":"https://dev.azure.com/BlacklightInternalsMo","ToScanCount":5,
+ "SkippedRepositoryCount":0,"SkippedByReason":{"Disabled":0,"InMaintenance":0,"Empty":0},
+ "SentCount":5,"QueueName":"scan-nightly","NotSentCount":0,
+ "SourceContext":"Enqueuer.EnqueueOrchestrator"}
+```
+
+There is no `@l` because the level is Information, and `@i` is a short ID for the message template. `@m` puts quotes round text values and writes the skip counts its own way, so a search reads the properties, such as `SkippedByReason.Empty`, not `@m`. A `Failed` or `Stopped` summary has `"@l":"Warning"` and an `ErrorMessage`.
 
 A skipped repository looks like `Skipped Kudos Wall/ProblemApp: Disabled`. If Azure DevOps lists none at all, a warning says to check what the PAT's owner can see. The PAT is never logged.
 
 ## Scan what it queued
 
-To see RepoScanner's scanner take a run's requests, run it locally after the enqueuer, as on 2026-10-08 (#111). It needs the scanner's one-off setup from RepoScanner's README: **Scan from the queue locally**, for its PAT, and **Database and migrations**, for SQL Server Express, the `RepoScanner` database and `Scanner__Database__ConnectionString`.
+To see RepoScanner's scanner take a run's requests, run both apps locally writing JSON, the enqueuer first, as on 2026-10-10 (#121; by hand on 2026-10-08 for #111). It needs the scanner's one-off setup from RepoScanner's README: **Scan from the queue locally**, for its PAT, and **Database and migrations**, for SQL Server Express, the `RepoScanner` database and `Scanner__Database__ConnectionString`. The commands are PowerShell.
 
 1. Check the queue is empty, so the scanner scans only this run's requests. Peeking changes nothing:
 
@@ -85,23 +98,104 @@ To see RepoScanner's scanner take a run's requests, run it locally after the enq
 
    If it is not empty, those requests are not this run's: decide what to do with them first, as the scanner would scan them too.
 
-2. Run the enqueuer (`dotnet run --project src/Enqueuer`) and keep the correlation IDs from its `Queued` lines.
-3. Peek again: one message per `Queued` line, each plain JSON beginning `{"schemaVersion":1,`.
-4. Run the scanner, from RepoScanner's folder: `dotnet run --project src/RepoScanner.Scanner`. It clones and scans each repository in turn, and ends with one line counting them, such as `Stopped taking messages from scan-nightly: queue empty. 5 scanned, 0 failed, 0 skipped, 0 poisoned`: one scanned for each `Queued` line.
-5. Find each request's scan run by its correlation ID:
+2. Build both apps, so `dotnet run --no-build` does not build again. It still prints its own first line, `Using launch settings from ...`, which is not JSON: step 6's filter skips it.
+
+   ```
+   dotnet build Enqueuer.sln
+   dotnet build ..\RepoScanner\RepoScanner.sln
+   ```
+
+3. Run the enqueuer writing JSON, keeping its output in a file as well as on screen, and keep the correlation IDs from its `Queued` lines:
+
+   ```
+   dotnet run --no-build --project src/Enqueuer -- --Enqueuer:Logging:Format Json | Tee-Object -FilePath $env:TEMP\enqueuer.log
+   ```
+
+   Every line the enqueuer writes is JSON: a `Skipped` line for each repository it skips, a `Queued` line for each it queues, then the summary `Completed` with `0 not sent`, and `$LASTEXITCODE` is 0. On 2026-10-10 the first request's line was:
+
+   ```json
+   {"@t":"2026-10-10T16:48:43.8112874Z","@m":"Queued \"Kudos Wall\"/\"victim-repo\" with correlation fe5f59fd-988d-43e3-928b-4ba02a906783","@i":"ce054e06","ProjectName":"Kudos Wall","RepositoryName":"victim-repo","CorrelationId":"fe5f59fd-988d-43e3-928b-4ba02a906783","SourceContext":"Enqueuer.EnqueueOrchestrator"}
+   ```
+
+   The second, for `Kudos Wall`/`Power Platform ALM`, had `fcc9d735-3747-4413-958a-fede964b9035`. The rest of this section follows those two.
+
+4. Peek again: one message per `Queued` line, each plain JSON beginning `{"schemaVersion":1,`.
+5. Run the scanner the same way, from RepoScanner's folder:
+
+   ```
+   dotnet run --no-build --project src/RepoScanner.Scanner -- --Scanner:Logging:Format Json | Tee-Object -FilePath $env:TEMP\scanner.log
+   ```
+
+   It clones and scans each repository in turn, and ends with one line counting them: its `@m` starts `Stopped taking messages from "scan-nightly": "queue empty". 5 scanned, 0 failed, 0 skipped,` and goes on with its other counts, one scanned for each `Queued` line. The 5 took 26 seconds on 2026-10-10, and `$LASTEXITCODE` was 0.
+6. Find one correlation ID in both logs, with the ID from a `Queued` line in place of `<id>`:
+
+   ```powershell
+   Get-Content $env:TEMP\enqueuer.log, $env:TEMP\scanner.log | Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object CorrelationId -eq '<id>' | Select-Object '@t', SourceContext, '@m'
+   ```
+
+   The enqueuer's `Queued` line comes first, then the scanner's lines for that scan: `Message ...`, `Cloned ...`, `Scanning ...`, the file walker's and each of the three scanners' lines, a line for each new finding, and `Scan run ... Completed`. Each line is read on its own with `ConvertFrom-Json`, and `StartsWith('{')` skips `dotnet run`'s first line. For `fe5f59fd-988d-43e3-928b-4ba02a906783` on 2026-10-10 it printed 28 lines, 1 from the enqueuer and 27 from the scanner, here cut to the first three and the last (the table cuts each message to the window's width; add `| Format-List` to read them whole):
+
+   ```
+   @t                           SourceContext                                       @m
+   --                           -------------                                       --
+   2026-10-10T16:48:43.8112874Z Enqueuer.EnqueueOrchestrator                        Queued "Kudos Wall"/"victim-repo" wi...
+   2026-10-10T16:49:08.8028020Z RepoScanner.Scanner.ScanOrchestrator                Message "7757b36a-8990-4f76-a8cb-9da...
+   2026-10-10T16:49:10.4900515Z RepoScanner.Scanner.Sources.AzureDevOpsCloneSource  Cloned "Kudos Wall"/"victim-repo" "m...
+   ...
+   2026-10-10T16:49:12.5429142Z RepoScanner.Scanner.RepositoryScanRunner            Scan run 1 Completed (Nightly) for "...
+   ```
+
+   Every ID from step 3 finds its own: each of the 5 found 1 enqueuer line and between 13 and 27 scanner lines.
+
+7. Find each request's scan run by its correlation ID:
 
    ```
    sqlcmd -S .\SQLEXPRESS -E -C -d RepoScanner -h -1 -W -s "|" -Q "SET NOCOUNT ON; SELECT s.CorrelationId, r.Name, r.AzureDevOpsId, s.TriggerType, s.Status FROM ScanRuns s JOIN Repositories r ON r.Id = s.RepositoryId WHERE s.CorrelationId IN ('<id>', '<id>')"
    ```
 
-   One row per request, `Nightly` because it came from `scan-nightly`, under the repository's real Azure DevOps ID. On 2026-10-08, for the first two requests of that day's run (SQL Server prints GUIDs in capitals):
+   One row per request, `Nightly` because it came from `scan-nightly`, under the repository's real Azure DevOps ID. On 2026-10-10, for the first two requests of that run, the two IDs above (SQL Server prints GUIDs in capitals):
 
    ```
-   A0A59D91-CF9F-46AE-BF2B-02D5E9E5F299|victim-repo|A94E21F6-EDD0-4FA7-BE1E-100495DE6249|Nightly|Completed
-   D7182A28-1CAC-4FEC-AA12-F3875D44C062|Power Platform ALM|0BBCB27B-B2B1-47EB-9553-1AA8D23DE74E|Nightly|Completed
+   FE5F59FD-988D-43E3-928B-4BA02A906783|victim-repo|A94E21F6-EDD0-4FA7-BE1E-100495DE6249|Nightly|Completed
+   FCC9D735-3747-4413-958A-FEDE964B9035|Power Platform ALM|0BBCB27B-B2B1-47EB-9553-1AA8D23DE74E|Nightly|Completed
    ```
 
-The same correlation ID is on every scanner log line about that request, so it also finds the scan in the scanner's log.
+The same correlation ID is on every scanner log line about that request, as step 6 showed, and in `ScanRuns.CorrelationId`. Once the apps run in Azure, the same search is a Log Analytics query: see Logs.
+
+## Logs
+
+The searches below are for Log Analytics, once the apps are deployed to Azure Container Apps. They have not been run: there is no Azure in this release (RepoScanner ADR-029), and the local filter above shows only that the property names match, not that Container Apps keeps each line whole in the `Log` column. Container Apps puts each line in the `Log` column of `ContainerAppConsoleLogs` as text, so a search first unpacks it with `parse_json`, as in RepoScanner's README (Logs). The ID in the first is the one from Scan what it queued.
+
+One request, from the enqueuer to the end of its scan:
+
+```kusto
+ContainerAppConsoleLogs
+| extend e = parse_json(Log)
+| where tostring(e.CorrelationId) == "fe5f59fd-988d-43e3-928b-4ba02a906783"
+| project Time = todatetime(e["@t"]), Source = tostring(e.SourceContext), Message = tostring(e["@m"])
+| order by Time asc
+```
+
+Enqueue runs that did not complete, in the last week:
+
+```kusto
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(7d)
+| extend e = parse_json(Log)
+| where isnotempty(tostring(e.EnqueueRunStatus)) and tostring(e.EnqueueRunStatus) != "Completed"
+| project TimeGenerated, Status = tostring(e.EnqueueRunStatus), Sent = toint(e.SentCount), NotSent = toint(e.NotSentCount), Error = tostring(e.ErrorMessage)
+```
+
+Nights that queued nothing: the same, with `where tostring(e.EnqueueRunStatus) == "Completed" and toint(e.SentCount) == 0`. A completed run that sent nothing is still `Completed` at `Information`, so no warning marks it: this search finds it.
+
+RepoScanner's rejected-PAT alert search also matches the enqueuer's line, since both write a `Fatal` line starting `Azure DevOps refused the token` and tests on each side pin it:
+
+```kusto
+ContainerAppConsoleLogs
+| extend e = parse_json(Log)
+| where tostring(e["@l"]) == "Fatal" and tostring(e["@m"]) startswith "Azure DevOps refused the token"
+| project TimeGenerated, ContainerGroupName, Message = tostring(e["@m"])
+```
 
 ## Configuration
 
@@ -166,3 +260,4 @@ The reason in brackets is repeated once for each try.
 - On a failure the summary comes just before the Fatal line, not after it: the orchestrator logs the summary, then `Program` logs the Fatal line when the exception reaches it.
 - A run whose settings are wrong has no summary. It stops before the run starts, with one Fatal line.
 - When the listing fails, the summary says `0 listed`. That means nothing was listed, not that Azure DevOps listed nothing, so read it with its status and error.
+- The searches in Logs have not been run against Log Analytics: there is none in this release (RepoScanner ADR-029). The local filter shows the property names match, not that Container Apps keeps each line whole in `Log`. For Issue 6 to check.

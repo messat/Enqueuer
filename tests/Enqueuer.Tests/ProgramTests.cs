@@ -452,6 +452,56 @@ namespace Enqueuer.Tests
             }
         }
 
+        // Issue 4 design, decision 1 and criterion 2, the part a test can prove: the correlation ID a Queued line logs is
+        // the one in the message the queue was sent, for each of two requests. The scanner puts the ID from the message on
+        // every line it writes (RepoScanner Issue 10), so a search on it finds the enqueuer's line and the scanner's.
+        // #121 then runs both apps by hand.
+        [Test]
+        public async Task RunAsync_EachQueuedLine_CarriesTheCorrelationIdOfTheMessageItSent()
+        {
+            using (FakeAzureDevOps azureDevOps = new FakeAzureDevOps())
+            {
+                azureDevOps.Respond(HttpStatusCode.OK, """
+                    {
+                      "count": 2,
+                      "value": [
+                        { "id": "0f8fad5b-d9cb-469f-a165-70867728950e", "name": "victim-repo", "project": { "name": "Kudos Wall" }, "defaultBranch": "refs/heads/main" },
+                        { "id": "3c9b2f4e-6a1d-4b8e-9f27-5d0e1a7c4b36", "name": "WebShop", "project": { "name": "Retail" }, "defaultBranch": "refs/heads/main" }
+                      ]
+                    }
+                    """);
+                FakeQueueClient queue = new FakeQueueClient("scan-test");
+
+                string output = await CaptureConsoleAsync(() => Program.RunAsync(ValidArgs, services =>
+                {
+                    azureDevOps.ReplaceAzureDevOps(services);
+                    queue.ReplaceQueue(services);
+                }));
+
+                // Compared as Guids, so the way the text is written cannot decide it. Only the Queued line has a CorrelationId.
+                List<JsonElement> queuedLines = LogLines.Read(output).Where(line => LogLines.Value(line, "CorrelationId") != null).ToList();
+                List<Guid> loggedIds = queuedLines.Select(line => Guid.Parse(LogLines.Value(line, "CorrelationId")!)).ToList();
+                List<Guid> sentIds = new List<Guid>();
+                List<string> sentRepositories = new List<string>();
+                foreach ((string Text, TimeSpan? VisibilityTimeout, TimeSpan? TimeToLive) sent in queue.Sent)
+                {
+                    using (JsonDocument message = JsonDocument.Parse(sent.Text))
+                    {
+                        sentIds.Add(Guid.Parse(message.RootElement.GetProperty("correlationId").GetString()!));
+                        sentRepositories.Add(message.RootElement.GetProperty("repositoryName").GetString()!);
+                    }
+                }
+
+                using (Assert.EnterMultipleScope())
+                {
+                    Assert.That(queue.Sent, Has.Count.EqualTo(2), output);
+                    Assert.That(loggedIds, Is.EqualTo(sentIds), output);
+                    Assert.That(queuedLines.Select(line => LogLines.Value(line, "RepositoryName")), Is.EqualTo(sentRepositories), output);
+                    Assert.That(sentRepositories, Is.EqualTo(new[] { "victim-repo", "WebShop" }), output);
+                }
+            }
+        }
+
         // Decision 4: Development keeps the readable text line
         [Test]
         public async Task RunAsync_InDevelopment_WritesText()
