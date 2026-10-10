@@ -5,13 +5,16 @@ using System.Threading.Tasks;
 using Azure.Storage.Queues;
 using Enqueuer.AzureDevOps;
 using Enqueuer.Configuration;
+using Enqueuer.Logging;
 using Enqueuer.Queue;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Serilog;
+using Serilog.Configuration;
 using Serilog.Events;
+using Serilog.Formatting.Compact;
 
 namespace Enqueuer
 {
@@ -32,9 +35,11 @@ namespace Enqueuer
         {
             // Start-up logger: exists before the host is built and after it is disposed, so a
             // failure to start is always logged. The host has its own logger for normal running.
-            Log.Logger = new LoggerConfiguration()
-                .Enrich.WithProperty("SourceContext", typeof(Program).FullName)
-                .WriteTo.Console(outputTemplate: ConsoleOutputTemplate)
+            // JSON or text as the host's is, so a fatal line such as a rejected PAT reaches Log
+            // Analytics as JSON too (#112, Issue 4 design decision 4)
+            Log.Logger = WriteToConsole(
+                    new LoggerConfiguration().Enrich.WithProperty("SourceContext", typeof(Program).FullName).WriteTo,
+                    ConsoleLogFormat.IsJsonBeforeTheHost(args))
                 .CreateLogger();
 
             try
@@ -113,6 +118,15 @@ namespace Enqueuer
             }
         }
 
+        // One CLEF JSON object per line for Log Analytics, with the finished message and every property, or
+        // the readable text line (#112, ENQ-ADR-002)
+        private static LoggerConfiguration WriteToConsole(LoggerSinkConfiguration writeTo, bool json)
+        {
+            return json
+                ? writeTo.Console(new RenderedCompactJsonFormatter())
+                : writeTo.Console(outputTemplate: ConsoleOutputTemplate);
+        }
+
         // Configures the host without running it, so tests can build it and inspect the services.
         public static HostApplicationBuilder CreateBuilder(string[] args)
         {
@@ -131,7 +145,10 @@ namespace Enqueuer
             // Serilog is the only place logs go
             builder.Logging.ClearProviders();
 
-            builder.Services.AddSerilog(logger => logger
+            // Text in Development, JSON elsewhere, unless Enqueuer:Logging:Format says (#112, Issue 4 design
+            // decision 4, ENQ-ADR-002)
+            bool json = ConsoleLogFormat.IsJson(builder.Configuration[ConsoleLogFormat.SettingName], builder.Environment.EnvironmentName);
+            builder.Services.AddSerilog(logger => WriteToConsole(logger
                 // Our own code logs from Information upwards
                 .MinimumLevel.Information()
                 // Framework messages (e.g. "Application started. Press Ctrl+C") only when they matter
@@ -143,12 +160,19 @@ namespace Enqueuer
                 // warnings and errors are wanted (Issue 2 design, decision 15)
                 .MinimumLevel.Override("System.Net.Http.HttpClient", LogEventLevel.Warning)
                 .MinimumLevel.Override("Polly", LogEventLevel.Warning)
-                // Lets later code add properties (e.g. CorrelationId, Issue 4) to every log line in a scope
+                // Adds the properties pushed to Serilog's LogContext to every line written while they are pushed
                 .Enrich.FromLogContext()
-                .WriteTo.Console(outputTemplate: ConsoleOutputTemplate),
+                .WriteTo, json),
                 // Keep the start-up logger in Log.Logger: the host's logger is disposed with the host,
                 // before Main's catch blocks run
                 preserveStaticLogger: true);
+
+            // How the console writes log lines: checked when the host starts, so a wrong Enqueuer:Logging:Format
+            // is one line and exit 2 like any setting (#112)
+            builder.Services.AddOptions<LoggingOptions>()
+                .Bind(builder.Configuration.GetSection(LoggingOptions.SectionName))
+                .ValidateDataAnnotations()
+                .ValidateOnStart();
 
             // Queue settings: read from the Enqueuer:Queue section, checked against the rules on
             // QueueOptions, and checked when the host starts rather than when first used
@@ -171,6 +195,10 @@ namespace Enqueuer
             // Azure (Issue 3 design, decision 8). Building the client makes no network call.
             builder.Services.AddSingleton<QueueClient>(services => QueueClients.Create(services.GetRequiredService<IOptions<QueueOptions>>().Value));
             builder.Services.AddSingleton<ScanRequestSender>();
+
+            // The orchestrator reads the time from this, so its tests can move it by hand and assert the summary's exact
+            // duration (Issue 4 design, decision 11)
+            builder.Services.AddSingleton(TimeProvider.System);
 
             builder.Services.AddSingleton<EnqueueOrchestrator>();
 

@@ -57,24 +57,38 @@ When the PAT is renewed, update both variables. The PAT never goes in an appsett
 
 ## What it logs
 
-One line per skipped repository with its reason, then the totals. A repository is skipped when it is disabled, in maintenance, or empty (no default branch); forks are queued like any other. Then one `Queued` line per scan request sent, with its correlation ID, and how many were sent. For example, against BlacklightInternalsMo and Azurite on 2026-10-08:
+The enqueuer logs one line per skipped repository, with its reason, then one `Queued` line per scan request sent, with its correlation ID, and ends the run with one summary line saying how it went. A repository is skipped when it is disabled, in maintenance, or empty (no default branch); forks are queued like any other.
+
+A run that gets past start-up always ends with the summary, however it ended, and it is the last line of the run itself. A run stopped by the start-up settings check (a setting missing or invalid: one `FTL` line starting `Invalid configuration`, exit code 2) stops before the run starts and has none. A wrong queue name or PAT passes that check and is found during the run, so it has a summary, as the example below shows. The summary is `Information` when the run `Completed`, and a warning ending `Error: ...` when it `Failed` or was `Stopped`; on a failure `Program`'s one `FTL` line comes after it. It gives the run's duration, how many repositories were listed and where, how many are to queue and how many were skipped, by reason, and how many were sent to the queue and how many were not. For example, a run against a misspelt queue name on 2026-10-10, with BlacklightInternalsMo's 5 repositories listed and Azurite running, but none sent:
 
 ```
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Enqueuer starting in Development for queue scan-nightly
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Listed 5 repositories in https://dev.azure.com/BlacklightInternalsMo: 5 to queue, 0 skipped
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/victim-repo with correlation a0a59d91-cf9f-46ae-bf2b-02d5e9e5f299
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/Power Platform ALM with correlation d7182a28-1cac-4fec-aa12-f3875d44c062
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/Kudos-Wall with correlation 33b2bd19-70c3-488c-8f13-ecdd4e9b4596
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/ProblemApp with correlation 21a2be97-52f3-4ef6-9dd8-ddcb60a60f80
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Queued Kudos Wall/DynamicsWorkbench with correlation 38ff2362-3dfc-4066-9178-b97c9d4da765
-[19:38:53 INF] Enqueuer.EnqueueOrchestrator: Sent 5 scan requests to scan-nightly
+[17:25:57 INF] Enqueuer.EnqueueOrchestrator: Enqueuer starting in Development for queue scan-missing-zz9q1
+[17:25:57 WRN] Enqueuer.EnqueueOrchestrator: Enqueue run Failed in 330 ms: 5 listed in https://dev.azure.com/BlacklightInternalsMo, 5 to queue, 0 skipped {"Disabled": 0, "InMaintenance": 0, "Empty": 0}, 0 sent to scan-missing-zz9q1, 5 not sent. Error: The queue scan-missing-zz9q1 does not exist. Create it, or correct Enqueuer:Queue:Name.
+[17:25:57 FTL] Enqueuer.Program: Queue missing, enqueuer stopped: The queue scan-missing-zz9q1 does not exist. Create it, or correct Enqueuer:Queue:Name.
 ```
+
+A completed run's summary is at `INF`, says `Completed`, and ends `N sent to scan-nightly, 0 not sent`, with N the number to queue.
+
+The example is Development's text. Every other environment writes each line as one JSON object: `@t` is the time, `@m` the message and `@l` the level, left out for Information, then every named value as a property of its own, such as `CorrelationId`, so a search can filter on it (ENQ-ADR-002). `dotnet run --project src/Enqueuer -- --Enqueuer:Logging:Format Json` shows it locally. A completed run's summary that way, on 2026-10-10 with BlacklightInternalsMo's 5 repositories, shown across several lines (the real line is one):
+
+```json
+{"@t":"2026-10-10T16:48:43.8463178Z",
+ "@m":"Enqueue run Completed in 644 ms: 5 listed in \"https://dev.azure.com/BlacklightInternalsMo\", 5 to queue, 0 skipped [(\"Disabled\": 0), (\"InMaintenance\": 0), (\"Empty\": 0)], 5 sent to \"scan-nightly\", 0 not sent",
+ "@i":"2d117eb5",
+ "EnqueueRunStatus":"Completed","EnqueueDurationMs":644,"ListedCount":5,
+ "OrganizationUrl":"https://dev.azure.com/BlacklightInternalsMo","ToScanCount":5,
+ "SkippedRepositoryCount":0,"SkippedByReason":{"Disabled":0,"InMaintenance":0,"Empty":0},
+ "SentCount":5,"QueueName":"scan-nightly","NotSentCount":0,
+ "SourceContext":"Enqueuer.EnqueueOrchestrator"}
+```
+
+There is no `@l` because the level is Information, and `@i` is a short ID for the message template. `@m` puts quotes round text values and writes the skip counts its own way, so a search reads the properties, such as `SkippedByReason.Empty`, not `@m`. A `Failed` or `Stopped` summary has `"@l":"Warning"` and an `ErrorMessage`.
 
 A skipped repository looks like `Skipped Kudos Wall/ProblemApp: Disabled`. If Azure DevOps lists none at all, a warning says to check what the PAT's owner can see. The PAT is never logged.
 
 ## Scan what it queued
 
-To see RepoScanner's scanner take a run's requests, run it locally after the enqueuer, as on 2026-10-08 (#111). It needs the scanner's one-off setup from RepoScanner's README: **Scan from the queue locally**, for its PAT, and **Database and migrations**, for SQL Server Express, the `RepoScanner` database and `Scanner__Database__ConnectionString`.
+To see RepoScanner's scanner take a run's requests, run both apps locally writing JSON, the enqueuer first, as on 2026-10-10 (#121; by hand on 2026-10-08 for #111). It needs the scanner's one-off setup from RepoScanner's README: **Scan from the queue locally**, for its PAT, and **Database and migrations**, for SQL Server Express, the `RepoScanner` database and `Scanner__Database__ConnectionString`. The commands are PowerShell.
 
 1. Check the queue is empty, so the scanner scans only this run's requests. Peeking changes nothing:
 
@@ -84,23 +98,116 @@ To see RepoScanner's scanner take a run's requests, run it locally after the enq
 
    If it is not empty, those requests are not this run's: decide what to do with them first, as the scanner would scan them too.
 
-2. Run the enqueuer (`dotnet run --project src/Enqueuer`) and keep the correlation IDs from its `Queued` lines.
-3. Peek again: one message per `Queued` line, each plain JSON beginning `{"schemaVersion":1,`.
-4. Run the scanner, from RepoScanner's folder: `dotnet run --project src/RepoScanner.Scanner`. It clones and scans each repository in turn, and ends with one line counting them, such as `Stopped taking messages from scan-nightly: queue empty. 5 scanned, 0 failed, 0 skipped, 0 poisoned`: one scanned for each `Queued` line.
-5. Find each request's scan run by its correlation ID:
+2. Build both apps, so `dotnet run --no-build` does not build again. It still prints its own first line, `Using launch settings from ...`, which is not JSON: step 6's filter skips it.
+
+   ```
+   dotnet build Enqueuer.sln
+   dotnet build ..\RepoScanner\RepoScanner.sln
+   ```
+
+3. Run the enqueuer writing JSON, keeping its output in a file as well as on screen, and keep the correlation IDs from its `Queued` lines:
+
+   ```
+   dotnet run --no-build --project src/Enqueuer -- --Enqueuer:Logging:Format Json | Tee-Object -FilePath $env:TEMP\enqueuer.log
+   ```
+
+   Every line the enqueuer writes is JSON: a `Skipped` line for each repository it skips, a `Queued` line for each it queues, then the summary `Completed` with `0 not sent`, and `$LASTEXITCODE` is 0. On 2026-10-10 the first request's line was:
+
+   ```json
+   {"@t":"2026-10-10T16:48:43.8112874Z","@m":"Queued \"Kudos Wall\"/\"victim-repo\" with correlation fe5f59fd-988d-43e3-928b-4ba02a906783","@i":"ce054e06","ProjectName":"Kudos Wall","RepositoryName":"victim-repo","CorrelationId":"fe5f59fd-988d-43e3-928b-4ba02a906783","SourceContext":"Enqueuer.EnqueueOrchestrator"}
+   ```
+
+   The second, for `Kudos Wall`/`Power Platform ALM`, had `fcc9d735-3747-4413-958a-fede964b9035`. The rest of this section follows those two.
+
+4. Peek again: one message per `Queued` line, each plain JSON beginning `{"schemaVersion":1,`.
+5. Run the scanner the same way, from RepoScanner's folder:
+
+   ```
+   dotnet run --no-build --project src/RepoScanner.Scanner -- --Scanner:Logging:Format Json | Tee-Object -FilePath $env:TEMP\scanner.log
+   ```
+
+   It clones and scans each repository in turn, and ends with one line counting them: its `@m` starts `Stopped taking messages from "scan-nightly": "queue empty". 5 scanned, 0 failed, 0 skipped,` and goes on with its other counts, one scanned for each `Queued` line. The 5 took 26 seconds on 2026-10-10, and `$LASTEXITCODE` was 0.
+6. Find one correlation ID in both logs, with the ID from a `Queued` line in place of `<id>`:
+
+   ```powershell
+   Get-Content $env:TEMP\enqueuer.log, $env:TEMP\scanner.log | Where-Object { $_.StartsWith('{') } | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object CorrelationId -eq '<id>' | Select-Object '@t', SourceContext, '@m'
+   ```
+
+   The enqueuer's `Queued` line comes first, then the scanner's lines for that scan: `Message ...`, `Cloned ...`, `Scanning ...`, the file walker's and each of the three scanners' lines, a line for each new finding, and `Scan run ... Completed`. Each line is read on its own with `ConvertFrom-Json`, and `StartsWith('{')` skips `dotnet run`'s first line. For `fe5f59fd-988d-43e3-928b-4ba02a906783` on 2026-10-10 it printed 28 lines, 1 from the enqueuer and 27 from the scanner, here cut to the first three and the last (the table cuts each message to the window's width; add `| Format-List` to read them whole):
+
+   ```
+   @t                           SourceContext                                       @m
+   --                           -------------                                       --
+   2026-10-10T16:48:43.8112874Z Enqueuer.EnqueueOrchestrator                        Queued "Kudos Wall"/"victim-repo" wi...
+   2026-10-10T16:49:08.8028020Z RepoScanner.Scanner.ScanOrchestrator                Message "7757b36a-8990-4f76-a8cb-9da...
+   2026-10-10T16:49:10.4900515Z RepoScanner.Scanner.Sources.AzureDevOpsCloneSource  Cloned "Kudos Wall"/"victim-repo" "m...
+   ...
+   2026-10-10T16:49:12.5429142Z RepoScanner.Scanner.RepositoryScanRunner            Scan run 1 Completed (Nightly) for "...
+   ```
+
+   Every ID from step 3 finds its own: each of the 5 found 1 enqueuer line and between 13 and 27 scanner lines.
+
+7. Find each request's scan run by its correlation ID:
 
    ```
    sqlcmd -S .\SQLEXPRESS -E -C -d RepoScanner -h -1 -W -s "|" -Q "SET NOCOUNT ON; SELECT s.CorrelationId, r.Name, r.AzureDevOpsId, s.TriggerType, s.Status FROM ScanRuns s JOIN Repositories r ON r.Id = s.RepositoryId WHERE s.CorrelationId IN ('<id>', '<id>')"
    ```
 
-   One row per request, `Nightly` because it came from `scan-nightly`, under the repository's real Azure DevOps ID. On 2026-10-08, for the first two requests of the run above (SQL Server prints GUIDs in capitals):
+   One row per request, `Nightly` because it came from `scan-nightly`, under the repository's real Azure DevOps ID. On 2026-10-10, for the first two requests of that run, the two IDs above (SQL Server prints GUIDs in capitals):
 
    ```
-   A0A59D91-CF9F-46AE-BF2B-02D5E9E5F299|victim-repo|A94E21F6-EDD0-4FA7-BE1E-100495DE6249|Nightly|Completed
-   D7182A28-1CAC-4FEC-AA12-F3875D44C062|Power Platform ALM|0BBCB27B-B2B1-47EB-9553-1AA8D23DE74E|Nightly|Completed
+   FE5F59FD-988D-43E3-928B-4BA02A906783|victim-repo|A94E21F6-EDD0-4FA7-BE1E-100495DE6249|Nightly|Completed
+   FCC9D735-3747-4413-958A-FEDE964B9035|Power Platform ALM|0BBCB27B-B2B1-47EB-9553-1AA8D23DE74E|Nightly|Completed
    ```
 
-The same correlation ID is on every scanner log line about that request, so it also finds the scan in the scanner's log.
+The same correlation ID is on every scanner log line about that request, as step 6 showed, and in `ScanRuns.CorrelationId`. Once the apps run in Azure, the same search is a Log Analytics query: see Logs.
+
+## Logs
+
+The searches below are for Log Analytics, once the apps are deployed to Azure Container Apps. They have not been run: there is no Azure in this release (RepoScanner ADR-029), and the local filter above shows only that the property names match, not that Container Apps keeps each line whole in the `Log` column. Container Apps puts each line in the `Log` column of `ContainerAppConsoleLogs` as text, so a search first unpacks it with `parse_json`, as in RepoScanner's README (Logs). The ID in the first is the one from Scan what it queued.
+
+One request, from the enqueuer to the end of its scan:
+
+```kusto
+ContainerAppConsoleLogs
+| extend e = parse_json(Log)
+| where tostring(e.CorrelationId) == "fe5f59fd-988d-43e3-928b-4ba02a906783"
+| project Time = todatetime(e["@t"]), Source = tostring(e.SourceContext), Message = tostring(e["@m"])
+| order by Time asc
+```
+
+Enqueue runs that started but did not complete, in the last week:
+
+```kusto
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(7d)
+| extend e = parse_json(Log)
+| where isnotempty(tostring(e.EnqueueRunStatus)) and tostring(e.EnqueueRunStatus) != "Completed"
+| project TimeGenerated, Status = tostring(e.EnqueueRunStatus), Sent = toint(e.SentCount), NotSent = toint(e.NotSentCount), Error = tostring(e.ErrorMessage)
+```
+
+Nights that queued nothing, in the last week:
+
+```kusto
+ContainerAppConsoleLogs
+| where TimeGenerated > ago(7d)
+| extend e = parse_json(Log)
+| where tostring(e.EnqueueRunStatus) == "Completed" and toint(e.SentCount) == 0
+| project TimeGenerated, Listed = toint(e.ListedCount), ToQueue = toint(e.ToScanCount), Skipped = toint(e.SkippedRepositoryCount)
+```
+
+A completed run that sent nothing is still `Completed` at `Information`, so no warning marks it: this search finds it.
+
+RepoScanner's rejected-PAT alert search also matches the enqueuer's line, since both write a `Fatal` line starting `Azure DevOps refused the token` and tests on each side pin it:
+
+```kusto
+ContainerAppConsoleLogs
+| extend e = parse_json(Log)
+| where tostring(e["@l"]) == "Fatal" and tostring(e["@m"]) startswith "Azure DevOps refused the token"
+| project TimeGenerated, ContainerGroupName, Message = tostring(e["@m"])
+```
+
+A run stopped by the start-up settings check never starts, so it has no summary and the search for runs that started but did not complete cannot find it: it logs only its `Fatal` line, whose `@m` starts `Invalid configuration`, so look for that too.
 
 ## Configuration
 
@@ -113,6 +220,7 @@ Settings are read from appsettings files, then environment variables, then the c
 | `Enqueuer:Queue:ServiceUri` | One of these two | | Azure only, with the job's managed identity (RepoScanner ADR-007). An absolute `https` URL, such as `https://<account>.queue.core.windows.net` |
 | `Enqueuer:AzureDevOps:OrganizationUrl` | Yes | `https://dev.azure.com/BlacklightInternalsMo` | An absolute `https` URL with no user name, query string or fragment. The organisation the scanner clones from |
 | `Enqueuer:AzureDevOps:Pat` | Yes | | Locally the user environment variable `Enqueuer__AzureDevOps__Pat` (see Run); in Azure a Key Vault secret reference. Never in an appsettings file. No space, line break or quote mark at either end |
+| `Enqueuer:Logging:Format` | No | (not set) | `Text` or `Json`, in any case. Not set: text in Development, one JSON object per line everywhere else (ENQ-ADR-002). Any other value stops the enqueuer with exit code 2 |
 
 As environment variables, `:` becomes `__`, for example `Enqueuer__Queue__Name`.
 
@@ -124,21 +232,23 @@ As environment variables, `:` becomes `__`, for example `Enqueuer__Queue__Name`.
 | 1 | Azure DevOps refused the PAT, Azure DevOps or the queue could not be reached, a send failed, or something else went wrong |
 | 2 | A setting is missing or invalid, so the enqueuer did not start, or the queue is missing |
 
-A refused PAT, whether wrong, expired or revoked, stops the enqueuer within seconds with one line and exit code 1. The scanner logs the same first words, so one alert covers both. With a wrong PAT on 2026-10-08:
+A run that fails once it has started logs its summary at `WRN` first (see What it logs), then `Program`'s one `FTL` line, which gives the reason and sets the exit code. The examples below are those `FTL` lines. A run stopped by the start-up settings check (`Invalid configuration`, a setting missing or invalid) has no summary, only its one `FTL` line.
+
+A refused PAT, whether wrong, expired or revoked, stops the enqueuer within seconds with its summary, one `FTL` line and exit code 1. The scanner logs the same first words, so one alert covers both. With a wrong PAT on 2026-10-08:
 
 ```
 [14:09:52 FTL] Enqueuer.Program: Azure DevOps refused the token, enqueuer stopped: Azure DevOps refused the token in Enqueuer:AzureDevOps:Pat for https://dev.azure.com/BlacklightInternalsMo. Check that it has not expired or been revoked, and that it has Code (Read).
 ```
 
-Any other failure to list the repositories, after up to 3 retries over at most 2 minutes, is one line starting `Azure DevOps could not list the repositories, enqueuer stopped:`, also with exit code 1.
+Any other failure to list the repositories, after up to 3 retries over at most 2 minutes, is one `FTL` line starting `Azure DevOps could not list the repositories, enqueuer stopped:`, after the summary, also with exit code 1.
 
-A missing queue is found on the first send, and stops the enqueuer with one line and exit code 2. The scanner logs the same first words. With a misspelt queue name on 2026-10-08:
+A missing queue is found on the first send, and stops the enqueuer with its summary, one `FTL` line and exit code 2. The scanner logs the same first words. With a misspelt queue name on 2026-10-08:
 
 ```
 [19:15:22 FTL] Enqueuer.Program: Queue missing, enqueuer stopped: The queue scan-missing-zz9q1 does not exist. Create it, or correct Enqueuer:Queue:Name.
 ```
 
-A send that still fails after the storage SDK's own retries, 5 of them, stops the enqueuer at that request with one line and exit code 1. The requests already sent stay on the queue, and the rest are not tried. The line gives Azure's status and error code, such as `Azure answered 403 (AuthorizationPermissionMismatch).`, or, when the queue cannot be reached at all, Azure's own summary of the retries. With Azurite not running, it comes after about 40 seconds and starts:
+A send that still fails after the storage SDK's own retries, 5 of them, stops the enqueuer at that request with its summary, one `FTL` line and exit code 1. The requests already sent stay on the queue, and the rest are not tried; the summary counts them as not sent. The line gives Azure's status and error code, such as `Azure answered 403 (AuthorizationPermissionMismatch).`, or, when the queue cannot be reached at all, Azure's own summary of the retries. With Azurite not running, it comes after about 40 seconds and starts:
 
 ```
 [19:16:13 FTL] Enqueuer.Program: Scan requests could not be sent, enqueuer stopped: The scan request for Kudos Wall/victim-repo could not be sent to scan-nightly: Retry failed after 6 tries. Retry settings can be adjusted in ClientOptions.Retry or by configuring a custom retry policy in ClientOptions.RetryPolicy. (No connection could be made because the target machine actively refused it. ...
@@ -159,3 +269,7 @@ The reason in brackets is repeated once for each try.
 - A missing queue gives exit code 2 locally. In Azure a misspelt queue name may be answered `403`, not `404`, because the job's identity may only add messages to `scan-nightly`, so it would exit 1 instead. This is still to be checked when the job is deployed (Issue 6).
 - The enqueuer sends Azure DevOps' repository names unchanged. A name the scanner would refuse, possible only if it was made through the API around Azure DevOps' naming rules, gets that one request moved to `scan-nightly-poison` by the scanner, with its warning.
 - The enqueuer's copy of the scan request is tied to the scanner's only by the contract tests on each side, which read the same example message (ENQ-ADR-001).
+- On a failure the summary comes just before the Fatal line, not after it: the orchestrator logs the summary, then `Program` logs the Fatal line when the exception reaches it.
+- A run stopped by the start-up settings check (`Invalid configuration`, exit code 2) has no summary. It stops before the run starts, with one Fatal line.
+- When the listing fails, the summary says `0 listed`. That means nothing was listed, not that Azure DevOps listed nothing, so read it with its status and error.
+- The searches in Logs have not been run against Log Analytics: there is none in this release (RepoScanner ADR-029). The local filter shows the property names match, not that Container Apps keeps each line whole in `Log`. For Issue 6 to check.

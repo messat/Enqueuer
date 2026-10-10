@@ -80,6 +80,7 @@ namespace Enqueuer.Tests.AzureDevOps
         private Answer _last = new Answer(HttpStatusCode.OK, SampleListing, JsonContentType, false);
         private bool _unreachable;
         private bool _hanging;
+        private Exception? _failure;
 
         public IReadOnlyList<SeenRequest> Requests
         {
@@ -118,6 +119,16 @@ namespace Enqueuer.Tests.AzureDevOps
             lock (_lock)
             {
                 _unreachable = true;
+            }
+        }
+
+        // Every request throws this exception from the bottom of the HTTP client, for a failure the retry handler and
+        // AzureDevOpsRepositoryClient do not translate, such as a cancellation the job's token did not cause
+        public void FailWith(Exception exception)
+        {
+            lock (_lock)
+            {
+                _failure = exception;
             }
         }
 
@@ -160,11 +171,13 @@ namespace Enqueuer.Tests.AzureDevOps
             Answer answer;
             bool unreachable;
             bool hanging;
+            Exception? failure;
 
             lock (_lock)
             {
                 unreachable = _unreachable;
                 hanging = _hanging;
+                failure = _failure;
 
                 _requests.Add(new SeenRequest(
                     request.Method,
@@ -179,6 +192,11 @@ namespace Enqueuer.Tests.AzureDevOps
                 }
 
                 answer = _last;
+            }
+
+            if (failure != null)
+            {
+                throw failure;
             }
 
             if (unreachable)
