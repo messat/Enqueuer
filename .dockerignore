@@ -1,0 +1,9 @@
+# Everything stays out of the build except what the Dockerfile copies
+*
+!global.json
+!Directory.Build.props
+!Directory.Packages.props
+!.editorconfig
+!src/
+src/**/bin/
+src/**/obj/

@@ -53,7 +53,71 @@ The enqueuer lists the repositories in Azure DevOps, so it needs a network conne
 
 `dotnet run` uses the `Development` environment (`Properties/launchSettings.json`), so the other settings come from `appsettings.Development.json`. The enqueuer runs once and exits; it never waits.
 
-When the PAT is renewed, update both variables. The PAT never goes in an appsettings file.
+When the PAT is renewed, update both variables, and `.env` if you run the container (see Run in a container). The PAT never goes in an appsettings file.
+
+## Run in a container
+
+In Azure the enqueuer runs from an image, as the scanner does. The image is built in two stages: the .NET 10 SDK compiles and publishes the app, and only the published app is copied into the .NET 10 runtime image, with no SDK and no git, as the enqueuer never clones. It runs as the image's own non-root user, `app` (1654), in the `Production` environment: `appsettings.Development.json` is left out of the published app, so every setting comes from environment variables, as in Azure, and the log is one JSON object per line (ENQ-ADR-002). The design is in [docs/design/2026-10-10-containerisation.md](docs/design/2026-10-10-containerisation.md).
+
+Needs Docker Desktop, using Linux containers. Build it from the repository root:
+
+```
+docker build -t enqueuer:v1 .
+```
+
+The tag is `v1`, set by hand: this release has no pipeline to tag images with a build ID, and the image is never pushed to a registry (RepoScanner ADR-029; RepoScanner ADR-005, amended 2026-10-04). No image here is tagged `latest`.
+
+### Its settings: .env
+
+The container reads every setting from `.env` at the repository root, which git ignores. `dotnet run` does not read it: it keeps `appsettings.Development.json` and the user environment variable. Once:
+
+1. Copy `.env.example` to `.env`.
+2. Replace `<azurite-account-key>` with Azurite's well-known account key, from Microsoft's Azurite documentation. Or copy the whole connection string from the `Scanner__Queue__ConnectionString` line of RepoScanner's `.env`, which is already in this form. It names Azurite as `host.docker.internal:10001`: `UseDevelopmentStorage=true` does not work here, as in the container it points at the container itself.
+3. Copy the PAT into it from the user variable, so it never shows on screen:
+
+   ```powershell
+   $f = (Resolve-Path .env).ProviderPath; $pat = [Environment]::GetEnvironmentVariable("Enqueuer__AzureDevOps__Pat", "User"); $lines = [IO.File]::ReadAllLines($f) | ForEach-Object { if ($_.StartsWith("Enqueuer__AzureDevOps__Pat=")) { "Enqueuer__AzureDevOps__Pat=$pat" } else { $_ } }; [IO.File]::WriteAllLines($f, $lines, (New-Object Text.UTF8Encoding $false))
+   ```
+
+Each line is `NAME=value`, with no quotes and no spaces around the value: Docker keeps both as part of the value. Save it as UTF-8. Docker cannot read UTF-16, which `>` and `Out-File` write in Windows PowerShell 5.1.
+
+### Running it
+
+```
+docker run --rm --env-file .env enqueuer:v1
+```
+
+It lists the repositories, queues the scan requests to `scan-nightly` in Azurite, prints its log, and exits. The exit code is the enqueuer's (see Exit codes). `--rm` deletes the container when it stops, and its log with it. To keep the log, for Docker Desktop's **Containers**, then **Logs**, or for `docker logs enqueuer-run`, name the container instead:
+
+```
+docker run --name enqueuer-run --env-file .env enqueuer:v1
+```
+
+Remove it with `docker rm enqueuer-run` before running it again under the same name.
+
+### Check it end to end
+
+```
+.\scripts\test-container.ps1
+```
+
+Needs Docker Desktop, Azurite, the Azure CLI, a network connection to Azure DevOps, a complete `.env`, and `scan-nightly` empty. It stops at the first check that fails and exits 1, or exits 0 when all 13 pass. It never prints a value from `.env`:
+
+1. Docker is running, with Linux containers.
+2. The Azure CLI is installed.
+3. `.env` is complete: every setting there, none empty, quoted, padded, still a `<...>` placeholder or `UseDevelopmentStorage=true`, the queue `scan-nightly`, and the file not UTF-16.
+4. The image builds, as `enqueuer:v1` (`-Tag` changes the tag).
+5. It runs as a non-root user.
+6. It has no .NET SDK.
+7. It has no git.
+8. It has no `appsettings.Development.json`.
+9. Every `FROM` in the Dockerfile names a tag, and none is `latest`.
+10. A container reaches Azurite on `host.docker.internal:10001`.
+11. `scan-nightly` exists and is empty.
+12. A run with a bad queue name exits 2 with one `Invalid configuration` Fatal line, and queues nothing.
+13. A real run exits 0 having sent at least one request. Every log line is JSON, the summary is `Completed` with `0 not sent`, and the `Queued` lines, the summary's sent count and the messages on the queue agree, by correlation ID. Neither run's output holds the PAT.
+
+It leaves check 13's requests on `scan-nightly` for the scanner (see Scan what it queued), so the next run stops at check 11 until the scanner has taken them. On 2026-10-10 all 13 checks passed, queuing BlacklightInternalsMo's 5 repositories.
 
 ## What it logs
 
@@ -118,6 +182,8 @@ To see RepoScanner's scanner take a run's requests, run both apps locally writin
    ```
 
    The second, for `Kudos Wall`/`Power Platform ALM`, had `fcc9d735-3747-4413-958a-fede964b9035`. The rest of this section follows those two.
+
+   The enqueuer can run in its container for this step instead (see Run in a container). It writes JSON without being told, as in Azure: `docker run --rm --env-file .env enqueuer:v1 | Tee-Object -FilePath $env:TEMP\enqueuer.log`.
 
 4. Peek again: one message per `Queued` line, each plain JSON beginning `{"schemaVersion":1,`.
 5. Run the scanner the same way, from RepoScanner's folder:
@@ -273,3 +339,8 @@ The reason in brackets is repeated once for each try.
 - A run stopped by the start-up settings check (`Invalid configuration`, exit code 2) has no summary. It stops before the run starts, with one Fatal line.
 - When the listing fails, the summary says `0 listed`. That means nothing was listed, not that Azure DevOps listed nothing, so read it with its status and error.
 - The searches in Logs have not been run against Log Analytics: there is none in this release (RepoScanner ADR-029). The local filter shows the property names match, not that Container Apps keeps each line whole in `Log`. For Issue 6 to check.
+- Nothing runs the container on a schedule locally: it is started by hand. The 02:00 schedule is the Azure job's, in Issue 6.
+- `.env` holds its own copy of the PAT. A renewed PAT must be copied there too, or the container exits 1 with `Azure DevOps refused the token`.
+- `enqueuer:v1` names what was built, not an exact build: a rebuild picks up Microsoft's newest .NET 10 patch under the same tag, as the scanner's `reposcanner:v1` does.
+- `test-container.ps1` peeks at most 32 messages, so check 13 fails, saying why, if more than 32 requests are sent.
+- Peeking does not see messages another reader has taken. If the scanner runs while `test-container.ps1` does, check 13's count fails: run them one after the other.

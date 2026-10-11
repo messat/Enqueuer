@@ -29,9 +29,12 @@
     <InternalsVisibleTo Include="Enqueuer.Tests" />
   </ItemGroup>
 
-  <!-- Copy the settings files next to the built app, where the host looks for them -->
+  <!-- Copy the settings files next to the built app, where the host looks for them. The Development file stays out
+       of the published app, so the image runs as Production with environment variables only, as in Azure
+       (Issue 5 design, decision 12) -->
   <ItemGroup>
     <None Update="appsettings*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
   </ItemGroup>
 
 </Project>
