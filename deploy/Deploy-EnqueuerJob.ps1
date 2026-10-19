@@ -6,7 +6,8 @@
     Run by the pipeline's Deploy stage, signed in as id-pipeline through sc-reposcanner-dev. Never run it by hand
     without -WhatIf: the job is changed only by the pipeline (#84).
 
-    Looks up id-scanner, then looks for the job:
+    Looks up id-scanner and checks the image is already in the registry, stopping before anything is changed if a run
+    asks for an image it never built. Then looks for the job:
 
         missing   creates it with every setting in the Issue 6 design's Job settings
         exists    assigns its identity, registry and Key Vault secret reference again, then updates its image,
@@ -132,6 +133,22 @@ $identityInfo = $identityJson | ConvertFrom-Json
 $identityId = $identityInfo.id
 
 $registryServer = "$Registry.azurecr.io"
+
+# The image must already be in the registry. A new run with only the Deploy stage ticked asks for an image its own
+# build ID never built, and the job update then fails on the missing manifest after the identity, registry and
+# secret have been set again (run 20261019.5). Stopping here changes nothing and says how to redeploy.
+$registryPrefix = "$registryServer/"
+if (-not $Image.StartsWith($registryPrefix)) {
+    throw "$Image is not in ${Registry}: the job pulls its image only from $registryServer"
+}
+$repositoryImage = $Image.Substring($registryPrefix.Length)
+$imageLookup = Invoke-AzCommand @('acr', 'repository', 'show', '--name', $Registry, '--image', $repositoryImage, '--query', 'digest', '--output', 'tsv')
+if ($imageLookup.ExitCode -ne 0) {
+    if ($imageLookup.Error -match 'the specified tag does not exist') {
+        throw "$repositoryImage is not in $Registry, so this run did not build it. To redeploy an image, re-run the Deploy stage of the run that built it."
+    }
+    throw "az acr repository show failed: $($imageLookup.Error)"
+}
 
 # The PAT as a Key Vault reference naming the secret without a version, so a renewed PAT is picked up without a
 # deployment. The job never holds its value (design, Job settings).
