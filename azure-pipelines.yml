@@ -82,3 +82,30 @@ stages:
                 az acr login --name $(registry)
                 docker build --tag $(registry).azurecr.io/$(image):$(Build.BuildId) .
                 docker push $(registry).azurecr.io/$(image):$(Build.BuildId)
+
+  - stage: Deploy
+    displayName: Deploy job-enqueuer-dev
+    dependsOn: Image
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      # A deployment job, so the reposcanner-dev environment lists what was deployed when, by which run (decision 13).
+      # Re-running this stage on an earlier run deploys that run's image again: that is how to roll back.
+      - deployment: Deploy
+        environment: reposcanner-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # A deployment job does not check out the repository by itself, and the script is in it
+                - checkout: self
+
+                # Creates job-enqueuer-dev if it is missing, otherwise updates it to this build's image and puts every
+                # setting back, so the job is changed only here (decision 10)
+                - task: AzureCLI@2
+                  displayName: Create or update job-enqueuer-dev
+                  inputs:
+                    azureSubscription: ${{ variables.serviceConnection }}
+                    scriptType: pscore
+                    scriptLocation: scriptPath
+                    scriptPath: deploy/Deploy-EnqueuerJob.ps1
+                    arguments: -Image $(registry).azurecr.io/$(image):$(Build.BuildId)
