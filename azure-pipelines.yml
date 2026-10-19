@@ -1,0 +1,84 @@
+# The Enqueuer repository's own pipeline (Issue 6, #84; docs/design/2026-10-19-scheduled-job-and-deployment.md).
+#
+# Every merge into develop builds and tests the enqueuer, pushes its image tagged with the build ID and
+# deploys it to the dev environment. A change only to documentation does not run it (decision 6).
+# Pull requests into develop and main run the Build stage only, through a build validation policy:
+# Azure Repos ignores a pr: section in a YAML file, so there is none here (decision 6).
+# Every stage runs on a Microsoft-hosted Linux agent, the same OS as the container (decision 5).
+
+trigger:
+  branches:
+    include:
+      - develop
+  paths:
+    exclude:
+      - docs
+      - '**/*.md'
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # The Workload Identity Federation connection, signed in as id-pipeline, so Azure DevOps holds no secret (decision 7)
+  serviceConnection: sc-reposcanner-dev
+  # The shared registry and the image's name. The tag is always the build ID, never latest (decision 9)
+  registry: enqreposcannerdev
+  image: enqueuer
+
+stages:
+  - stage: Build
+    displayName: Build and test
+    jobs:
+      - job: Build
+        steps:
+          - task: UseDotNet@2
+            displayName: Install the SDK named in global.json
+            inputs:
+              packageType: sdk
+              useGlobalJson: true
+
+          - script: dotnet restore Enqueuer.sln
+            displayName: Restore
+
+          - script: dotnet build Enqueuer.sln --configuration Release --no-restore
+            displayName: Build
+
+          # The 80% line coverage gate is in Directory.Build.props, so a drop below it fails this step, as it does locally (decision 8)
+          - script: dotnet test Enqueuer.sln --configuration Release --no-build --logger trx --results-directory $(Agent.TempDirectory)/TestResults
+            displayName: Test, with the coverage gate
+
+          - task: PublishTestResults@2
+            displayName: Publish the test results
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: VSTest
+              testResultsFiles: '$(Agent.TempDirectory)/TestResults/*.trx'
+              testRunTitle: Enqueuer
+
+          - task: PublishCodeCoverageResults@2
+            displayName: Publish the coverage report
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: '$(Build.SourcesDirectory)/tests/Enqueuer.Tests/TestResults/coverage/coverage.cobertura.xml'
+
+  - stage: Image
+    displayName: Build and push the image
+    dependsOn: Build
+    # Only a merge into develop reaches Azure: a pull request, or a run of any other branch, stops after Build (decision 6)
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: Image
+        steps:
+          - task: AzureCLI@2
+            displayName: Push $(image):$(Build.BuildId) to $(registry)
+            inputs:
+              azureSubscription: ${{ variables.serviceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              # Any failed command fails the step, rather than the script carrying on to the next one
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                $PSNativeCommandUseErrorActionPreference = $true
+                az acr login --name $(registry)
+                docker build --tag $(registry).azurecr.io/$(image):$(Build.BuildId) .
+                docker push $(registry).azurecr.io/$(image):$(Build.BuildId)
