@@ -16,7 +16,7 @@ What happens when a change is merged into `develop`:
 1. The Enqueuer repository's pipeline starts, and only that pipeline.
 2. **Build:** restore, build and test on a Microsoft-hosted Linux agent. The test run fails the pipeline if line coverage drops below 80%, the same gate as `dotnet test` locally.
 3. **Image:** the Dockerfile from Issue 5 is built, tagged `enqueuer:<build ID>` and pushed to the shared registry, `enqreposcannerdev`.
-4. **Deploy:** the pipeline looks for `job-enqueuer`. If it is missing, it creates it with every setting; if it exists, it points it at the new image and puts every setting back as the pipeline says.
+4. **Deploy:** the pipeline looks for `job-enqueuer-dev`. If it is missing, it creates it with every setting; if it exists, it points it at the new image and puts every setting back as the pipeline says.
 5. The run shows the tests, the coverage and a deployment to the `reposcanner-dev` environment. The next 02:00 UTC run uses the new image.
 
 Rolling back is running the Deploy stage of an earlier pipeline run again, which deploys that run's image tag.
@@ -29,7 +29,7 @@ Created by hand from PowerShell with the Azure CLI between 2026-10-16 and 2026-1
 |---|---|---|
 | Resource group | `RepoAnalysis-dev`, UK West | Everything below |
 | Container registry | `enqreposcannerdev` | The enqueuer's images; the scanner's later |
-| Container Apps environment | `code-reposcanner-dev`, logging to `log-reposcanner-dev` | Where `job-enqueuer` runs |
+| Container Apps environment | `code-reposcanner-dev`, logging to `log-reposcanner-dev` | Where `job-enqueuer-dev` runs |
 | Storage queue | `scan-nightly` in `strreposcannerdev` | Where the enqueuer sends |
 | Key Vault | `kv-reposcanner-dev`, secret `azure-devops-pat` | The PAT: Code (Read) on BlacklightInternalsMo **(Muhammad)** |
 | Runtime identity | `id-scanner` | What the job runs as. Already holds AcrPull, Key Vault Secrets User and Storage Queue Data Message Sender on `scan-nightly`, assigned on 2026-10-17 |
@@ -53,7 +53,7 @@ Created by hand from PowerShell with the Azure CLI between 2026-10-16 and 2026-1
 |---|---|---|---|
 | 1 | Which pipeline first | This one, then the scanner's, then the dashboard's **(Muhammad)** | The smallest of the three: no database, no migrations, one job. It proves the registry, the service connection and the job deployment before the scanner adds Migrate |
 | 2 | Nightly messages before the scanner is deployed | Accepted. `scan-nightly` holds each night's messages until `job-scanner-nightly` exists. A message lives 7 days, the queue's default | When the scanner arrives it scans each repository once and drops the older requests for it as already done (#76). Messages older than 7 days expire unread |
-| 3 | Who creates the shared resources | Done by hand, once, with the Azure CLI **(Muhammad)**. The pipeline deploys only the image and `job-enqueuer` | #84 says nothing is applied to Azure by hand. What changes from one release to the next, the image and the job, is changed only by the pipeline; what is created once is not |
+| 3 | Who creates the shared resources | Done by hand, once, with the Azure CLI **(Muhammad)**. The pipeline deploys only the image and `job-enqueuer-dev` | #84 says nothing is applied to Azure by hand. What changes from one release to the next, the image and the job, is changed only by the pipeline; what is created once is not |
 | 4 | #118's role | Assigned by hand on 2026-10-17, with the scanner's roles. The pipeline assigns no roles | #118 says the pipeline grants it. `id-pipeline` cannot grant roles, and should not be able to |
 | 5 | Agent | Microsoft-hosted `ubuntu-latest` for every stage | The image is built on Linux, and the tests then run on the same OS as the container. The organisation's free tier is one hosted parallel job and 1,800 minutes a month. The tests have only run on Windows so far: any that assume Windows are fixed when the first run finds them |
 | 6 | When it runs | On every merge into `develop`, except a change only to `docs/**` or `*.md`. On every pull request into `develop` or `main`, through a build validation policy, the Build stage only. `main` deploys nothing | Documentation needs no deployment. The policy is the one RepoScanner ADR-020 waits for. There is no production environment yet |
@@ -71,8 +71,9 @@ Created by hand from PowerShell with the Azure CLI between 2026-10-16 and 2026-1
 
 ## Job settings
 
-| Setting | `job-enqueuer` |
+| Setting | `job-enqueuer-dev` |
 |---|---|
+| Name | `job-enqueuer-dev` **(Muhammad, 2026-10-19)**: the environment is in the name |
 | Image | `enqreposcannerdev.azurecr.io/enqueuer:<build ID>`, pulled as `id-scanner` |
 | Trigger | Schedule, `0 2 * * *`, UTC: 02:00 in winter, 03:00 in British Summer Time |
 | Replica timeout | 600 seconds: listing retries for at most 2 minutes, and a run normally takes seconds |
@@ -119,7 +120,7 @@ stages:
 
 ```
 azure-pipelines.yml                       the pipeline                                    #116, #117
-deploy/Deploy-EnqueuerJob.ps1             create or update job-enqueuer                   #117
+deploy/Deploy-EnqueuerJob.ps1             create or update job-enqueuer-dev               #117
 docs/adr/ENQ-ADR-001-...md                dated amendment                                 #116
 docs/adr/README.md                        ENQ-ADR-001 marked amended                      #116
 docs/design/2026-10-19-scheduled-job-and-deployment.md   this document                    #84
@@ -142,7 +143,7 @@ No application code changes, so `dotnet test` is unchanged. The pipeline is chec
 |---|---|
 | #116 | The pull request's run passes Build on Linux; any test that assumes Windows is fixed in its own commit. A pull request that drops coverage below 80% fails, shown once and abandoned |
 | #116 | The first run on `develop` pushes `enqueuer:<build ID>`, listed in the registry, and no `latest` |
-| #117 | The first run creates `job-enqueuer` with the settings above, read back with `az containerapp job show`. A second run with no change leaves everything but the image tag the same |
+| #117 | The first run creates `job-enqueuer-dev` with the settings above, read back with `az containerapp job show`. A second run with no change leaves everything but the image tag the same |
 | #117 | One execution started by hand (`az containerapp job start`) exits 0, and `scan-nightly` holds one message per BlacklightInternalsMo repository, peeked with the storage account's key. Its JSON lines are in `ContainerAppConsoleLogs`, and the PAT is in none of them |
 | #119 | The first 02:00 UTC run does the same. The correlation ID query waits for the scanner (Issue 12) |
 | #84 | No secret variable, variable group or secure file exists in Lumina |
